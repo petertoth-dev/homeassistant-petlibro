@@ -454,6 +454,79 @@ class PetLibroAPI:
             _LOGGER.error(f"Error fetching workRecord for device {device_id}: {e}")
             raise PetLibroAPIError(f"Error fetching workRecord for device {device_id}: {e}")
 
+    async def get_device_meal_records(self, device_id: str, start_time: int, end_time: int) -> list[dict]:
+        """Return every MEAL_RECORD work record between two epoch-ms times, newest page first.
+
+        A meal record is one visit to the bowl as the feeder's scale and camera saw it:
+        `intake` (grams eaten), `petEatingStartTime` / `eatingEndTime` (epoch ms) and
+        `petsInfo`, the camera's split of the visit per recognized pet (`petId` -1 is a pet
+        it did not recognize).
+
+        The list is paged by moving `endTime` back to the oldest record of the previous
+        page. Overlapping pages are deduplicated by record id, records of other types or
+        outside the window are skipped, and a malformed page raises instead of producing
+        a partial total. Based on carlbai's Granary 2 (PLAF105) reader.
+        """
+        records_by_id: dict[str | int, dict] = {}
+        cursor = end_time
+        page_size = 25
+        for _ in range(10):
+            groups = await self.session.request("POST", "/device/workRecord/list", json={
+                "deviceSn": device_id,
+                "startTime": start_time,
+                "endTime": cursor,
+                "size": page_size,
+                "type": ["MEAL_RECORD"],
+            })
+            if groups == {}:  # PetLibroSession.request turns an empty data list into {}
+                groups = []
+            if not isinstance(groups, list):
+                raise PetLibroAPIError("Invalid meal record response")
+            page = []
+            for group in groups:
+                if not isinstance(group, dict) or not isinstance(group.get("workRecords"), list):
+                    raise PetLibroAPIError("Invalid meal record group")
+                page.extend(group["workRecords"])
+            timestamps = []
+            for record in page:
+                if not isinstance(record, dict):
+                    raise PetLibroAPIError("Invalid meal record")
+                timestamp = record.get("recordTime")
+                if isinstance(timestamp, bool) or not isinstance(timestamp, int):
+                    raise PetLibroAPIError("Meal record without a timestamp")
+                timestamps.append(timestamp)
+                if record.get("type") != "MEAL_RECORD" or not start_time <= timestamp <= end_time:
+                    continue
+                record_id = record.get("id")
+                if isinstance(record_id, bool) or not isinstance(record_id, (str, int)) or record_id in ("", 0):
+                    raise PetLibroAPIError("Meal record without an id")
+                records_by_id.setdefault(record_id, record)
+            if len(page) < page_size or min(timestamps) < start_time:
+                return list(records_by_id.values())
+            oldest = min(timestamps)
+            if oldest >= cursor:
+                raise PetLibroAPIError("Meal record paging did not advance")
+            cursor = oldest
+        raise PetLibroAPIError("Meal records exceeded the page limit")
+
+    async def device_messages(self) -> list[dict]:
+        """Return the app's message center, newest first (account-wide, about the last 10).
+
+        Each message has an `id`, an `eventKey`, a millisecond `timestamp` and the device
+        serial inside its JSON-encoded `param`. Reading the list does not mark messages as
+        read in the app (`/device/msg/detail` does). Cached for 10 seconds because every
+        camera feeder on the account reads the same list.
+        """
+        now = utcnow()
+        last_call_time = self._last_api_call_times.get("device_messages")
+        if last_call_time and (now - last_call_time) < timedelta(seconds=10):
+            return self._cached_responses.get("device_messages", [])
+        data = await self.session.get("/device/msg/list")
+        messages = data if isinstance(data, list) else []
+        self._last_api_call_times["device_messages"] = now
+        self._cached_responses["device_messages"] = messages
+        return messages
+
     async def get_device_events(self, device_id: str) -> dict:
         """Fetch real-time information for a device, with caching to prevent frequent requests."""
         now = utcnow()

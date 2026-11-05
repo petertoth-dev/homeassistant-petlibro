@@ -1,10 +1,20 @@
 import aiohttp
 from logging import getLogger
 
+from datetime import datetime
+import json
+from typing import Any
+
+from homeassistant.util import dt as dt_util
+
 from ...exceptions import PetLibroAPIError
 from .granary_smart_camera_feeder import GranarySmartCameraFeeder
 
 _LOGGER = getLogger(__name__)
+
+# petsInfo uses this petId for the share of a visit the camera could not match to a pet.
+UNKNOWN_PET_ID = -1
+UNKNOWN_PET_NAME = "Unknown"
 
 
 def _numeric_value(value: object) -> float | None:
@@ -14,12 +24,44 @@ def _numeric_value(value: object) -> float | None:
     return float(value)
 
 
+def _epoch_ms(value: object) -> int | None:
+    """Return an epoch-milliseconds API value as an int, or None."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return int(value)
+
+
+def _local_time(epoch_ms: int) -> datetime:
+    """Convert epoch milliseconds to an aware datetime in Home Assistant's time zone."""
+    return dt_util.as_local(dt_util.utc_from_timestamp(epoch_ms / 1000))
+
+
+def _json_object(value: object) -> dict[str, Any]:
+    """Return a JSON-encoded API object as a dict ({} when absent or invalid)."""
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except ValueError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 class Granary2VisionFeeder(GranarySmartCameraFeeder):
     """Represents the Granary 2 Vision feeder.
 
     Subclass of GranarySmartCameraFeeder so the device loads and
     reuses its entities. Can be split into a standalone class if desired.
     """
+
+    def __init__(self, *args, **kwargs):
+        """Initialize the feeder."""
+        super().__init__(*args, **kwargs)
+        # The latest meal overall and per pet id; kept past midnight so they don't go unknown.
+        self._last_meal: dict[str, Any] | None = None
+        self.last_meal_by_pet: dict[int, dict[str, Any]] = {}
 
     async def refresh(self):
         """Refresh the device data from the API."""
@@ -50,6 +92,194 @@ class Granary2VisionFeeder(GranarySmartCameraFeeder):
         except PetLibroAPIError as err:
             self.update_data({"dataRealInfo": {}})
             _LOGGER.error(f"Error refreshing data real info for Granary2VisionFeeder: {err}")
+
+        # Today's meals: one record per visit, weighed by the bowl scale and split per pet by
+        # the camera. A failed read clears them, so totals go unknown instead of going stale.
+        try:
+            day_start = dt_util.start_of_local_day()
+            records = await self.api.get_device_meal_records(
+                self.serial,
+                int(day_start.timestamp() * 1000),
+                int(dt_util.utcnow().timestamp() * 1000),
+            )
+            self.update_data({"mealRecords": {"day": day_start.date().isoformat(), "records": records}})
+            if meals := self.today_meals:
+                self._last_meal = meals[-1]
+                for meal in meals:  # oldest first, so each pet ends on its latest meal
+                    for share in meal["pets"]:
+                        self.last_meal_by_pet[share["pet_id"]] = {
+                            "time": meal["time"],
+                            "grams": share["grams"],
+                            "seconds": share["seconds"],
+                            "feeder": self.name,
+                        }
+            if records:
+                newest = max(records, key=lambda record: record["recordTime"])
+                _LOGGER.debug(
+                    "Newest meal record for %s: fields %s, numbers %s, petsInfo %s",
+                    self.name,
+                    sorted(newest),
+                    {k: v for k, v in newest.items() if isinstance(v, (int, float)) and k != "deviceSn"},
+                    newest.get("petsInfo"),
+                )
+        except (PetLibroAPIError, aiohttp.ClientError) as err:
+            self.update_data({"mealRecords": {}})
+            _LOGGER.warning("Unable to refresh meal records for %s: %s", self.name, err)
+
+        # The app's message center (alerts and notifications). Account-wide, cached by the API.
+        try:
+            self.update_data({"messages": await self.api.device_messages()})
+        except (PetLibroAPIError, aiohttp.ClientError) as err:
+            _LOGGER.warning("Unable to refresh the message center for %s: %s", self.name, err)
+
+    # --- Meals (MEAL_RECORD work records)
+
+    def _pet_name(self, pet_id: int) -> str:
+        """Return the name of a pet in a meal record's petsInfo, from the account's pets."""
+        if pet_id == UNKNOWN_PET_ID:
+            return UNKNOWN_PET_NAME
+        if pet := (getattr(self.hub, "pets", None) or {}).get(str(pet_id)):
+            return pet.name
+        return f"Pet {pet_id}"
+
+    def _parse_meal(self, record: dict[str, Any]) -> dict[str, Any] | None:
+        """Turn a MEAL_RECORD into a meal: who ate, when, how much and for how long."""
+        record_ms = _epoch_ms(record.get("recordTime"))
+        if record_ms is None:
+            return None
+        start_ms = _epoch_ms(record.get("petEatingStartTime"))
+        end_ms = _epoch_ms(record.get("eatingEndTime"))
+        # The top-level `duration` is not seconds (it reads 1 for a 66 s visit), so the
+        # visit's length comes from its start and end times.
+        seconds = (
+            round((end_ms - start_ms) / 1000)
+            if start_ms is not None and end_ms is not None and end_ms >= start_ms
+            else None
+        )
+        grams = _numeric_value(record.get("intake"))
+
+        pets = []
+        for share in record.get("petsInfo") or []:
+            if not isinstance(share, dict):
+                continue
+            pet_id = share.get("petId")
+            if isinstance(pet_id, bool) or not isinstance(pet_id, int):
+                pet_id = UNKNOWN_PET_ID
+            pets.append({
+                "pet_id": pet_id,
+                "name": self._pet_name(pet_id),
+                "grams": _numeric_value(share.get("intake")),
+                "seconds": _numeric_value(share.get("duration")),
+            })
+        if len(pets) == 1:
+            # A visit by one pet: the whole visit is that pet's meal.
+            if pets[0]["grams"] is None:
+                pets[0]["grams"] = grams
+            if seconds is not None:
+                pets[0]["seconds"] = seconds
+
+        return {
+            "id": record.get("id"),
+            "record_ms": record_ms,
+            "time": _local_time(start_ms if start_ms is not None else record_ms),
+            "end": _local_time(end_ms) if end_ms is not None else None,
+            "grams": grams,
+            "seconds": seconds,
+            "pets": pets,
+        }
+
+    @property
+    def today_meals(self) -> list[dict[str, Any]] | None:
+        """Return today's meals, oldest first, or None when they could not be read today."""
+        meal_data = self._data.get("mealRecords") or {}
+        if meal_data.get("day") != dt_util.now().date().isoformat():
+            return None
+        meals = [meal for record in meal_data.get("records") or [] if (meal := self._parse_meal(record))]
+        meals.sort(key=lambda meal: meal["time"])
+        return meals
+
+    @property
+    def last_meal(self) -> dict[str, Any] | None:
+        """Return the most recent meal seen since Home Assistant started (survives midnight)."""
+        return self._last_meal
+
+    def pet_meals_today(self, pet_id: int) -> list[dict[str, Any]] | None:
+        """Return one pet's shares of today's meals, or None when meals could not be read."""
+        if (meals := self.today_meals) is None:
+            return None
+        return [
+            {"time": meal["time"], "grams": share["grams"], "seconds": share["seconds"], "feeder": self.name}
+            for meal in meals
+            for share in meal["pets"]
+            if share["pet_id"] == pet_id
+        ]
+
+    @property
+    def today_consumed_food_weight(self) -> float | None:
+        """Return the grams eaten from this feeder today (every visit, recognized or not)."""
+        if (meals := self.today_meals) is None or any(meal["grams"] is None for meal in meals):
+            return None
+        return round(sum(meal["grams"] for meal in meals), 1)
+
+    @property
+    def today_meal_count(self) -> int | None:
+        """Return the number of visits that ate from this feeder today."""
+        meals = self.today_meals
+        return None if meals is None else len(meals)
+
+    @property
+    def today_meal_duration(self) -> int | None:
+        """Return the seconds spent eating from this feeder today."""
+        if (meals := self.today_meals) is None or any(meal["seconds"] is None for meal in meals):
+            return None
+        return sum(meal["seconds"] for meal in meals)
+
+    @property
+    def last_meal_time(self) -> datetime | None:
+        """Return when the most recent meal started."""
+        return meal["time"] if (meal := self.last_meal) else None
+
+    @property
+    def last_meal_pet(self) -> str | None:
+        """Return who ate the most recent meal (several names for a shared visit)."""
+        if not (meal := self.last_meal):
+            return None
+        return ", ".join(share["name"] for share in meal["pets"]) or UNKNOWN_PET_NAME
+
+    # --- Message center (app notifications)
+
+    @property
+    def notifications(self) -> list[dict[str, Any]] | None:
+        """Return this feeder's message-center notifications, oldest first.
+
+        None until the message center has been read once. The message list is
+        account-wide, so messages are matched to this feeder by the deviceSn inside
+        each message's JSON `param`.
+        """
+        if "messages" not in self._data:
+            return None
+        notifications = []
+        for message in self._data.get("messages") or []:
+            if not isinstance(message, dict):
+                continue
+            param = _json_object(message.get("param"))
+            timestamp = _epoch_ms(message.get("timestamp"))
+            message_id = message.get("id")
+            if param.get("deviceSn") != self.serial or timestamp is None or message_id in (None, ""):
+                continue
+            notification = {
+                "id": message_id,
+                "record_ms": timestamp,
+                "time": _local_time(timestamp),
+                "event_key": message.get("eventKey"),
+                "details": {key: value for key, value in param.items() if key != "deviceSn"},
+            }
+            for api_key, key in (("title", "title"), ("content", "message"), ("imageUrl", "image_url")):
+                if isinstance(value := message.get(api_key), str) and value:
+                    notification[key] = value
+            notifications.append(notification)
+        notifications.sort(key=lambda notification: notification["record_ms"])
+        return notifications
 
     @property
     def night_vision(self) -> str:

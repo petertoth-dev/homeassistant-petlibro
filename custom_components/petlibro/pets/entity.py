@@ -73,6 +73,7 @@ class PL_PetEntityDescription(EntityDescription):
     available_fn: Callable[[Pet, bool], bool] = lambda p, _: None
     entity_registry_visible_default_fn: Callable[[Pet, bool], bool] = lambda p, _: None
     entity_registry_enabled_default_fn: Callable[[Pet, bool], bool] = lambda p, _: None
+    create_fn: Callable[[Pet], bool] = lambda _: True
     petlibro_unit: API | str | None = None
 
 
@@ -594,6 +595,59 @@ PET_ENTITY_MAP: dict[PL_PetEntity, tuple[PL_PetEntityDescription]] = {
             state_class=SensorStateClass.TOTAL_INCREASING,
             device_class=SensorDeviceClass.DURATION,
             native_unit_of_measurement=UnitOfTime.SECONDS,
+        ),
+        # Meals at camera feeders that weigh each visit and recognize who ate (Granary 2 Vision).
+        PL_PetSensorEntityDescription(
+            key="today_feeder_intake",
+            translation_key="today_feeder_intake",
+            name="Today's Feeder Food Eaten",
+            icon="mdi:food-drumstick",
+            state_class=SensorStateClass.TOTAL_INCREASING,
+            device_class=SensorDeviceClass.WEIGHT,
+            native_unit_of_measurement=UnitOfMass.GRAMS,
+            extra_state_attributes_fn=lambda pet: {
+                "meals": [
+                    {
+                        "time": meal["time"].isoformat(),
+                        "grams": meal["grams"],
+                        "seconds": meal["seconds"],
+                        "feeder": meal["feeder"],
+                    }
+                    for meal in pet.today_feeder_meals or []
+                ]
+            },
+            create_fn=lambda pet: bool(pet.meal_tracking_feeders),
+        ),
+        PL_PetSensorEntityDescription(
+            key="today_feeder_meal_count",
+            translation_key="today_feeder_meal_count",
+            name="Today's Feeder Meals",
+            icon="mdi:counter",
+            state_class=SensorStateClass.TOTAL_INCREASING,
+            create_fn=lambda pet: bool(pet.meal_tracking_feeders),
+        ),
+        PL_PetSensorEntityDescription(
+            key="today_feeder_eating_time",
+            translation_key="today_feeder_eating_time",
+            name="Today's Feeder Eating Time",
+            icon="mdi:timer-outline",
+            state_class=SensorStateClass.TOTAL_INCREASING,
+            device_class=SensorDeviceClass.DURATION,
+            native_unit_of_measurement=UnitOfTime.SECONDS,
+            create_fn=lambda pet: bool(pet.meal_tracking_feeders),
+        ),
+        PL_PetSensorEntityDescription(
+            key="last_feeder_meal_time",
+            translation_key="last_feeder_meal_time",
+            name="Last Feeder Meal",
+            icon="mdi:clock-check-outline",
+            device_class=SensorDeviceClass.TIMESTAMP,
+            extra_state_attributes_fn=lambda pet: {
+                "grams": meal["grams"],
+                "seconds": meal["seconds"],
+                "feeder": meal["feeder"],
+            } if (meal := pet.last_feeder_meal) else None,
+            create_fn=lambda pet: bool(pet.meal_tracking_feeders),
         ),
     ),
     PL_PetImageEntity: (

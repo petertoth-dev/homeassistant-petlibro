@@ -36,7 +36,10 @@ If you enjoy this integration and want to support its development, please consid
 * Air Smart Feeder (PLAF108)
 * Polar Wet Food Feeder (PLAF109)
 * Granary Smart Camera Feeder (PLAF203)
-* Granary 2 Vision (PLAF205)
+* Granary 2 Vision (PLAF205), single bowl and Vision Duo
+  * Meals per pet from the camera's recognition and the bowl scale: each pet gets Today's Feeder Food Eaten (g), Today's Feeder Meals, Today's Feeder Eating Time and Last Feeder Meal
+  * The feeder gets Today's Food Eaten (with a `meals` list: time, grams, seconds, who), Today's Meals, Today's Eating Time, Last Meal and Last Meal By
+  * Event entities: **Meal** fires once per finished meal (`pet_names`, `grams`, `seconds`, the per-pet split); **Notification** fires for each of the feeder's message-center alerts (`event_key`, `details`). Both land in the logbook and history and can trigger automations; meals eaten while Home Assistant was down fire after it restarts
 * One RFID Smart Feeder (PLAF301)
 
 ### Fountains

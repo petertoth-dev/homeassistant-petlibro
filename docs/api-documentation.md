@@ -550,6 +550,52 @@ Work/feeding records (past 30 days).
 ]
 ```
 
+#### Meal records (Granary 2 / Granary 2 Vision)
+
+With `"type": ["MEAL_RECORD"]` the same endpoint returns one record per visit to the bowl,
+weighed by the bowl scale. On the Vision models the camera also splits the visit per pet.
+Example (field names as observed, values made up):
+
+```json
+{
+  "id": 123456,
+  "type": "MEAL_RECORD",
+  "eventType": "PET_EATING_RECORD_EVENT",
+  "recordTime": 1762365666000,
+  "petEatingStartTime": 1762365600000,
+  "eatingEndTime": 1762365666000,
+  "duration": 1,
+  "intake": 20.0,
+  "petsInfo": [
+    {"petId": 325457, "intake": 5.0},
+    {"petId": -1, "intake": 15.0}
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `intake` | Grams eaten during the whole visit |
+| `petEatingStartTime` / `eatingEndTime` | Visit start and end, epoch ms |
+| `duration` | Not seconds (reads 1 for a 66 s visit); use the start and end times |
+| `petsInfo[].petId` | Pet the camera recognized; `-1` is a pet it could not match ("Unknown pet") |
+| `petsInfo[].intake` | That pet's grams of the visit |
+
+Observed on a live Granary 2 (PLAF105, carlbai's fork) and a live Granary 2 Vision Duo
+(billyfw's fork). The service can return other record types despite the filter, so filter
+by `type`. Page by moving `endTime` back to the oldest `recordTime` of the previous page
+(25 per page) and deduplicate by `id`. The integration reads today's records (since local
+midnight) on every refresh.
+
+### GET /device/msg/list
+
+The app's message center (alerts and notifications), newest first, about the last 10
+messages for the whole account. Each message has an `id`, an `eventKey` (for example
+`DETECTION_MOVE`, `DETECTION_SOUND`), a millisecond `timestamp`, an `imageUrl` and a
+JSON-encoded `param` that holds the `deviceSn`, which is how a message is matched to a
+device. Reading the list does not mark messages as read (`GET /device/msg/detail?id=`
+does). `GET /device/msg/page` is the paged history. Shape from PR #293 (PLAF203).
+
 ## Pet Endpoints
 
 ### POST /device/devicePetRelation/getBoundPets

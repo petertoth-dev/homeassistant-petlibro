@@ -40,6 +40,23 @@ from .pets.entity import PL_PetSensorEntity
 
 _LOGGER = getLogger(__name__)
 
+# Most recent meals listed in the "meals" attribute of Today's Food Eaten.
+MEALS_ATTRIBUTE_LIMIT = 25
+
+
+def meal_attributes(meal: dict) -> dict:
+    """Return a Granary 2 Vision meal as JSON-friendly state attributes."""
+    return {
+        "time": meal["time"].isoformat(),
+        "grams": meal["grams"],
+        "seconds": meal["seconds"],
+        "pets": [
+            {"name": share["name"], "grams": share["grams"], "seconds": share["seconds"]}
+            for share in meal["pets"]
+        ],
+    }
+
+
 def icon_for_gauge_level(gauge_level: int | None = None, offset: int = 0) -> str:
     """Return a gauge icon valid identifier."""
     if gauge_level is None or gauge_level <= 0 + offset:
@@ -255,6 +272,12 @@ class PetLibroSensorEntity(PetLibroEntity[_DeviceT], SensorEntity):
                         "id": next_feed_data.get("id"),
                         "meal_call": next_feed_data.get("enableAudio"),
                     }
+            case "today_consumed_food_weight" if isinstance(self.device, Granary2VisionFeeder):
+                # Today's most recent meals (capped so the attributes stay small enough to record).
+                meals = self.device.today_meals or []
+                return {"meals": [meal_attributes(meal) for meal in meals[-MEALS_ATTRIBUTE_LIMIT:]]}
+            case "last_meal_time" | "last_meal_pet" if isinstance(self.device, Granary2VisionFeeder):
+                return meal_attributes(meal) if (meal := self.device.last_meal) else None
             case key if key in (
                 "today_feeding_quantity_weight",
                 "last_feed_quantity_weight", 
@@ -841,6 +864,44 @@ DEVICE_SENSOR_MAP: dict[type[Device], list[PetLibroSensorEntityDescription]] = {
             state_class=SensorStateClass.MEASUREMENT,
             entity_category=EntityCategory.DIAGNOSTIC,
             should_report=lambda device: device.portion_to_gram_ratio is not None
+        ),
+        PetLibroSensorEntityDescription[Granary2VisionFeeder](
+            key="today_consumed_food_weight",
+            translation_key="today_consumed_food_weight",
+            icon="mdi:food-drumstick",
+            name="Today's Food Eaten",
+            native_unit_of_measurement=UnitOfMass.GRAMS,
+            device_class=SensorDeviceClass.WEIGHT,
+            state_class=SensorStateClass.TOTAL_INCREASING,
+        ),
+        PetLibroSensorEntityDescription[Granary2VisionFeeder](
+            key="today_meal_count",
+            translation_key="today_meal_count",
+            icon="mdi:counter",
+            name="Today's Meals",
+            state_class=SensorStateClass.TOTAL_INCREASING,
+        ),
+        PetLibroSensorEntityDescription[Granary2VisionFeeder](
+            key="today_meal_duration",
+            translation_key="today_meal_duration",
+            icon="mdi:timer-outline",
+            name="Today's Eating Time",
+            native_unit_of_measurement=UnitOfTime.SECONDS,
+            device_class=SensorDeviceClass.DURATION,
+            state_class=SensorStateClass.TOTAL_INCREASING,
+        ),
+        PetLibroSensorEntityDescription[Granary2VisionFeeder](
+            key="last_meal_time",
+            translation_key="last_meal_time",
+            icon="mdi:clock-check-outline",
+            name="Last Meal",
+            device_class=SensorDeviceClass.TIMESTAMP,
+        ),
+        PetLibroSensorEntityDescription[Granary2VisionFeeder](
+            key="last_meal_pet",
+            translation_key="last_meal_pet",
+            icon="mdi:cat",
+            name="Last Meal By",
         ),
     ],
     OneRFIDSmartFeeder: [

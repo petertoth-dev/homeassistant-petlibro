@@ -72,6 +72,55 @@
       },
       "portion_to_gram_ratio": {
         "name": "Grams per Portion"
+      },
+      "today_consumed_food_weight": {
+        "name": "Today's Food Eaten"
+      },
+      "today_meal_count": {
+        "name": "Today's Meals"
+      },
+      "today_meal_duration": {
+        "name": "Today's Eating Time"
+      },
+      "last_meal_time": {
+        "name": "Last Meal"
+      },
+      "last_meal_pet": {
+        "name": "Last Meal By"
+      },
+      "today_feeder_intake": {
+        "name": "Today's Feeder Food Eaten"
+      },
+      "today_feeder_meal_count": {
+        "name": "Today's Feeder Meals"
+      },
+      "today_feeder_eating_time": {
+        "name": "Today's Feeder Eating Time"
+      },
+      "last_feeder_meal_time": {
+        "name": "Last Feeder Meal"
+      }
+    },
+    "event": {
+      "meal": {
+        "name": "Meal",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "meal": "Meal"
+            }
+          }
+        }
+      },
+      "notification": {
+        "name": "Notification",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "notification": "Notification"
+            }
+          }
+        }
       }
     },
     "binary_sensor": {

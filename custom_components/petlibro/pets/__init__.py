@@ -45,6 +45,7 @@ class Pet(Event):
                 for entity_type, entity_descriptions in PET_ENTITY_MAP.items()
                 if entity_type == pet_entity
                 for description in entity_descriptions
+                if getattr(description, "create_fn", None) is None or description.create_fn(self)
             ]
         )
         return entities
@@ -350,3 +351,62 @@ class Pet(Event):
     def today_fountain_drinking_time(self) -> int:
         """Total seconds spent drinking at RFID fountains today."""
         return self._data.get("todayFountainDrinkingTime") or 0
+
+    # --- Feeder meals (camera feeders that weigh each visit and recognize who ate)
+
+    @property
+    def meal_tracking_feeders(self) -> list:
+        """Return the account's feeders that report meals per pet (Granary 2 Vision)."""
+        from ..devices.feeders.granary_2_vision_feeder import Granary2VisionFeeder
+
+        devices = getattr(self.hub, "devices", None) or {}
+        return [device for device in devices.values() if isinstance(device, Granary2VisionFeeder)]
+
+    @property
+    def today_feeder_meals(self) -> list[dict[str, Any]] | None:
+        """Return this pet's meals today at every meal-tracking feeder, oldest first.
+
+        None while any of those feeders could not read today's meals, so a failed read
+        never looks like a smaller total.
+        """
+        meals = []
+        for feeder in self.meal_tracking_feeders:
+            if (feeder_meals := feeder.pet_meals_today(self.id)) is None:
+                return None
+            meals.extend(feeder_meals)
+        return sorted(meals, key=lambda meal: meal["time"])
+
+    @property
+    def today_feeder_intake(self) -> float | None:
+        """Grams this pet ate from meal-tracking feeders today."""
+        if (meals := self.today_feeder_meals) is None or any(meal["grams"] is None for meal in meals):
+            return None
+        return round(sum(meal["grams"] for meal in meals), 1)
+
+    @property
+    def today_feeder_meal_count(self) -> int | None:
+        """Number of meals this pet ate from meal-tracking feeders today."""
+        meals = self.today_feeder_meals
+        return None if meals is None else len(meals)
+
+    @property
+    def today_feeder_eating_time(self) -> int | None:
+        """Seconds this pet spent eating from meal-tracking feeders today."""
+        if (meals := self.today_feeder_meals) is None or any(meal["seconds"] is None for meal in meals):
+            return None
+        return round(sum(meal["seconds"] for meal in meals))
+
+    @property
+    def last_feeder_meal(self) -> dict[str, Any] | None:
+        """Return this pet's most recent meal seen since Home Assistant started."""
+        meals = [
+            meal
+            for feeder in self.meal_tracking_feeders
+            if (meal := feeder.last_meal_by_pet.get(self.id))
+        ]
+        return max(meals, key=lambda meal: meal["time"]) if meals else None
+
+    @property
+    def last_feeder_meal_time(self):
+        """Return when this pet's most recent meal started."""
+        return meal["time"] if (meal := self.last_feeder_meal) else None
