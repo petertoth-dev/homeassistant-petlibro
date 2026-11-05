@@ -131,6 +131,11 @@ def _meal_attributes(meal: dict[str, Any]) -> dict[str, Any]:
             }
             for share in meal["pets"]
         ],
+        # Pets that came to the bowl during this visit without eating.
+        "show_ups": [
+            {"pet_id": share["pet_id"], "name": share["name"], "seconds": share["seconds"]}
+            for share in meal.get("show_ups") or []
+        ],
     }
 
 

@@ -134,23 +134,48 @@ class Granary2VisionFeeder(GranarySmartCameraFeeder):
 
     # --- Meals (MEAL_RECORD work records)
 
-    def _pet_name(self, pet_id: int) -> str:
-        """Return the name of a pet in a meal record's petsInfo, from the account's pets."""
+    def _pet_name(self, pet_id: int, share: dict[str, Any]) -> str:
+        """Return a pet's name: the account's pet profile, else the record's own petName."""
         if pet_id == UNKNOWN_PET_ID:
             return UNKNOWN_PET_NAME
         if pet := (getattr(self.hub, "pets", None) or {}).get(str(pet_id)):
             return pet.name
-        return f"Pet {pet_id}"
+        name = share.get("petName")
+        return name if isinstance(name, str) and name else f"Pet {pet_id}"
+
+    def _parse_shares(self, shares: object) -> list[dict[str, Any]]:
+        """Parse petsInfo / showUpPetsInfo: one entry per pet, grams and seconds of its own."""
+        parsed = []
+        for share in shares if isinstance(shares, list) else []:
+            if not isinstance(share, dict):
+                continue
+            pet_id = share.get("petId")
+            if isinstance(pet_id, bool) or not isinstance(pet_id, int):
+                pet_id = UNKNOWN_PET_ID
+            parsed.append({
+                "pet_id": pet_id,
+                "name": self._pet_name(pet_id, share),
+                "grams": _numeric_value(share.get("intake")),
+                # Seconds: 157 here is the "02m37s" in the same entry's text.
+                "seconds": _numeric_value(share.get("duration")),
+            })
+        return parsed
 
     def _parse_meal(self, record: dict[str, Any]) -> dict[str, Any] | None:
-        """Turn a MEAL_RECORD into a meal: who ate, when, how much and for how long."""
+        """Turn a MEAL_RECORD into a meal: who ate, when, how much and for how long.
+
+        `petsInfo` lists the pets that ate (each with its own grams and seconds; their
+        grams add up to the visit's `intake`). `showUpPetsInfo` lists pets that came to
+        the bowl during the visit without eating ("Horusz show up", petId -1 when not
+        recognized).
+        """
         record_ms = _epoch_ms(record.get("recordTime"))
         if record_ms is None:
             return None
         start_ms = _epoch_ms(record.get("petEatingStartTime"))
         end_ms = _epoch_ms(record.get("eatingEndTime"))
-        # The top-level `duration` is not seconds (it reads 1 for a 66 s visit), so the
-        # visit's length comes from its start and end times.
+        # The top-level `duration` is whole minutes (2 for "02m52s"), so the visit's
+        # length comes from its start and end times.
         seconds = (
             round((end_ms - start_ms) / 1000)
             if start_ms is not None and end_ms is not None and end_ms >= start_ms
@@ -158,24 +183,12 @@ class Granary2VisionFeeder(GranarySmartCameraFeeder):
         )
         grams = _numeric_value(record.get("intake"))
 
-        pets = []
-        for share in record.get("petsInfo") or []:
-            if not isinstance(share, dict):
-                continue
-            pet_id = share.get("petId")
-            if isinstance(pet_id, bool) or not isinstance(pet_id, int):
-                pet_id = UNKNOWN_PET_ID
-            pets.append({
-                "pet_id": pet_id,
-                "name": self._pet_name(pet_id),
-                "grams": _numeric_value(share.get("intake")),
-                "seconds": _numeric_value(share.get("duration")),
-            })
+        pets = self._parse_shares(record.get("petsInfo"))
         if len(pets) == 1:
-            # A visit by one pet: the whole visit is that pet's meal.
+            # One pet ate: fill in from the visit only what its own entry lacks.
             if pets[0]["grams"] is None:
                 pets[0]["grams"] = grams
-            if seconds is not None:
+            if pets[0]["seconds"] is None:
                 pets[0]["seconds"] = seconds
 
         return {
@@ -186,6 +199,7 @@ class Granary2VisionFeeder(GranarySmartCameraFeeder):
             "grams": grams,
             "seconds": seconds,
             "pets": pets,
+            "show_ups": self._parse_shares(record.get("showUpPetsInfo")),
         }
 
     @property
