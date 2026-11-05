@@ -34,8 +34,8 @@ class PolarWetFoodFeeder(Device):
                 "wetFeedingPlan": wet_feeding_plan or {},
                 "getfeedingplantoday": get_feeding_plan_today or {}
             })
-            if self.manual_feed_id is not None:
-                self._manual_feed_active = True
+            # Follow the cloud both ways, so a lid opened or closed in the app shows up here too.
+            self._manual_feed_active = self.manual_feed_id is not None
         except PetLibroAPIError as err:
             _LOGGER.error(f"Error refreshing data for PolarWetFoodFeeder: {err}")
 
