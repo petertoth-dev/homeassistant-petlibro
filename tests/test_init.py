@@ -2,9 +2,9 @@
 
 import asyncio
 from datetime import timedelta
-from hashlib import md5
 from unittest.mock import patch
 
+import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.helpers import entity_registry as er
@@ -14,16 +14,18 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry, async_
 from custom_components.petlibro.const import DOMAIN, IntegrationSetting
 from custom_components.petlibro.security import CONF_PASSWORD_DIGEST
 
-from .fakes import DUO_SERIAL, MEMBER_ID, POLAR_SERIAL, Session, push_payload
+from custom_components.petlibro.exceptions import PetLibroLoginRequired
 
-DIGEST = md5(b"hunter2").hexdigest()
+from .fakes import DUO_SERIAL, MEMBER_ID, POLAR_SERIAL, FakeCloud, Session, push_payload
+
+SESSION = {"email": "tester@example.invalid", "region": "US", "api_token": "t"}
 POLAR_TOPIC = f"dl/PLAF109/{POLAR_SERIAL}/app/event/sub"
 
 
-def make_entry(hass, options=None, data=None, minor_version=2):
+def make_entry(hass, options=None, data=None, minor_version=3):
     entry = MockConfigEntry(
         domain=DOMAIN, version=1, minor_version=minor_version, options=options or {},
-        data=data or {"email": "tester@example.invalid", CONF_PASSWORD_DIGEST: DIGEST, "region": "US", "api_token": "t"},
+        data=data or SESSION,
     )
     entry.add_to_hass(hass)
     return entry
@@ -109,16 +111,48 @@ async def test_daily_check_reconnects_when_the_certificate_is_due(hass, cloud, b
         await until(hass, lambda: len(broker.credentials) == 2 and broker.open.is_set())
 
 
-async def test_an_old_entry_gets_its_password_replaced_by_the_digest(hass, cloud, broker):
-    entry = make_entry(hass, minor_version=1, data={
-        CONF_EMAIL: "tester@example.invalid", CONF_PASSWORD: "hunter2", "region": "US", "api_token": "t",
-    })
+@pytest.mark.parametrize(("minor_version", "secret"), [(1, {CONF_PASSWORD: "hunter2"}), (2, {CONF_PASSWORD_DIGEST: "d"})])
+async def test_an_old_entry_loses_its_password_or_digest(hass, cloud, broker, minor_version, secret):
+    entry = make_entry(hass, minor_version=minor_version, data={**SESSION, **secret})
     await setup(hass, entry)
-    assert entry.minor_version == 2
-    assert CONF_PASSWORD not in entry.data and entry.data[CONF_PASSWORD_DIGEST] == DIGEST
+    assert entry.minor_version == 3 and dict(entry.data) == SESSION
     assert entry.state is ConfigEntryState.LOADED
 
 
-async def test_an_entry_without_credentials_does_not_load(hass, cloud, broker):
-    entry = make_entry(hass, data={"region": "US"})
+async def test_an_entry_without_a_session_asks_for_the_password(hass, cloud, broker):
+    entry = make_entry(hass, data={"region": "US", "email": "tester@example.invalid"})
     assert not await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.SETUP_ERROR
+    assert [flow["context"]["source"] for flow in entry.async_get_active_flows(hass, {"reauth"})] == ["reauth"]
+
+
+async def test_an_ended_session_asks_for_the_password(hass, cloud, broker):
+    """PETLIBRO ends the session and no password is stored: re-authentication, no login."""
+    entry = make_entry(hass)
+    cloud_member_info = FakeCloud.member_info
+
+    async def ended(self):
+        self.session.login_required = True
+        self.session.on_login_required()
+        raise PetLibroLoginRequired("ended")
+
+    with patch.object(FakeCloud, "member_info", ended):
+        assert not await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.SETUP_ERROR
+    assert len(list(entry.async_get_active_flows(hass, {"reauth"}))) == 1  # started once, not twice
+    assert cloud["api"].session.logins == 0
+    assert FakeCloud.member_info is cloud_member_info
+
+
+async def test_a_session_ending_while_running_stops_polling_and_asks_once(hass, cloud, broker):
+    entry = make_entry(hass, options={IntegrationSetting.ENABLE_LIVE_UPDATES: False})
+    hub = await setup(hass, entry)
+    session = cloud["api"].session
+    session.login_required = True
+    session.on_login_required()
+    await hub.coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert not hub.coordinator.last_update_success
+    assert len(list(entry.async_get_active_flows(hass, {"reauth"}))) == 1

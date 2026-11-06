@@ -11,7 +11,7 @@ from types import MappingProxyType
 import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
-from homeassistant.const import CONF_API_TOKEN, CONF_EMAIL, CONF_PASSWORD, CONF_REGION
+from homeassistant.const import CONF_EMAIL, CONF_PASSWORD, CONF_REGION
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import section
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -33,9 +33,9 @@ from .const import (
 from .exceptions import PetLibroCannotConnect, PetLibroInvalidAuth
 from .hub import PetLibroHub
 from .member import Member
-from .security import AccountCredentials
+from .security import AccountCredentials, session_entry_data
 
-# Typed passwords are masked in the form and hashed right away (see security.py).
+# Typed passwords are masked in the form, hashed right away and never stored (see security.py).
 PASSWORD_SELECTOR = TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD))
 
 _LOGGER = logging.getLogger(__name__)
@@ -52,12 +52,17 @@ class PetlibroConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Petlibro."""
 
     VERSION = 1
-    MINOR_VERSION = 2  # 1.2: the password digest replaces the stored password
+    MINOR_VERSION = 3  # 1.3: only the session is stored (1.2 stored a digest, 1.1 the password)
 
     token: str
+    client_id: str | None
     email: str
     region: str
-    credentials: AccountCredentials  # e-mail + password digest; the typed password is not kept
+    credentials: AccountCredentials  # e-mail + password digest, for this flow's login only
+
+    def _session_data(self) -> dict[str, Any]:
+        """Entry data for the login this flow just made."""
+        return session_entry_data(self.region, self.credentials.email, self.token, self.client_id)
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Handle the initial step."""
@@ -74,15 +79,8 @@ class PetlibroConfigFlow(ConfigFlow, domain=DOMAIN):
 
             # Validate input and login to the API
             if not (error := await self._validate_input()):
-                # If validation passes, create the entry with email, password, and token
-                return self.async_create_entry(
-                    title=self.email,
-                    data={
-                        CONF_REGION: self.region,
-                        **self.credentials.as_entry_data(),
-                        CONF_API_TOKEN: self.token
-                    }
-                )
+                # If validation passes, create the entry with the account and its session
+                return self.async_create_entry(title=self.email, data=self._session_data())
             errors["base"] = error
 
         return self.async_show_form(
@@ -108,15 +106,8 @@ class PetlibroConfigFlow(ConfigFlow, domain=DOMAIN):
 
                 # Validate input and login to the API again
                 if not (error := await self._validate_input()):
-                    # Update the config entry with the new token and password after re-auth
-                    self.hass.config_entries.async_update_entry(
-                        entry,
-                        data={
-                            CONF_REGION: self.region,
-                            **self.credentials.as_entry_data(),
-                            CONF_API_TOKEN: self.token
-                        },
-                    )
+                    # Store the new session (the password is not kept)
+                    self.hass.config_entries.async_update_entry(entry, data=self._session_data())
                     await self.hass.config_entries.async_reload(entry.entry_id)
                     return self.async_abort(reason="reauth_successful")
 
@@ -140,15 +131,7 @@ class PetlibroConfigFlow(ConfigFlow, domain=DOMAIN):
             self.region = entry.data.get(CONF_REGION, "US")
 
             if not (error := await self._validate_input()):
-                self.hass.config_entries.async_update_entry(
-                    entry,
-                    title=self.email,
-                    data={
-                        CONF_REGION: self.region,
-                        **self.credentials.as_entry_data(),
-                        CONF_API_TOKEN: self.token,
-                    },
-                )
+                self.hass.config_entries.async_update_entry(entry, title=self.email, data=self._session_data())
                 await self.hass.config_entries.async_reload(entry.entry_id)
                 return self.async_abort(reason="reconfigure_successful")
             errors["base"] = error
@@ -177,6 +160,7 @@ class PetlibroConfigFlow(ConfigFlow, domain=DOMAIN):
             )
 
             self.token = await api.login(self.credentials.email, self.credentials.password_digest)
+            self.client_id = api.session.client_id
             _LOGGER.debug("Login successful")
         except PetLibroCannotConnect:
             return "cannot_connect"
@@ -381,6 +365,7 @@ class PetlibroOptionsFlow(OptionsFlow):
                     credentials.password_digest,
                 )
                 new_token = await api.login(credentials.email, credentials.password_digest)
+                new_client_id = api.session.client_id
             except PetLibroInvalidAuth:
                 errors["base"] = "invalid_auth"
             except PetLibroCannotConnect:
@@ -392,11 +377,7 @@ class PetlibroOptionsFlow(OptionsFlow):
                 self.hass.config_entries.async_update_entry(
                     self.entry,
                     title=new_email,
-                    data={
-                        **{key: value for key, value in self.entry.data.items() if key != CONF_PASSWORD},
-                        **credentials.as_entry_data(),
-                        CONF_API_TOKEN: new_token,
-                    },
+                    data=session_entry_data(self.entry.data[CONF_REGION], credentials.email, new_token, new_client_id),
                 )
                 await self.hass.config_entries.async_reload(self.entry.entry_id)
                 return self.async_abort(reason="credentials_updated")

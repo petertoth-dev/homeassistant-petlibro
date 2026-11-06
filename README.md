@@ -49,9 +49,12 @@ default and can be turned off in the integration settings ("Live updates (push)"
 [docs/api-documentation.md](docs/api-documentation.md#live-updates-the-apps-mqtt-channel).
 
 ### Credentials
-The integration stores your e-mail and only the MD5 digest of your password (the API never needs the
-password itself); existing entries are converted automatically. Tokens, the digest, the MQTT login and
-certificates are redacted from logs.
+The integration never stores your password or anything derived from it. The password you type is used
+for one login and dropped; Home Assistant keeps only that login's session (API token and MQTT client id).
+When PETLIBRO ends the session (for example after you log in with the same account in the app),
+Home Assistant shows a "Re-authenticate" prompt and you type the password once more. Existing entries
+lose their stored password or digest automatically. Tokens, the MQTT login and certificates are
+redacted from logs.
 
 ### Fountains
 * Dockstream Smart Fountain (PLWF105)

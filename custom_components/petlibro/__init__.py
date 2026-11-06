@@ -2,6 +2,7 @@ import logging
 
 from datetime import timedelta  # For managing the update interval
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.const import Platform
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.device_registry import DeviceEntry
@@ -24,7 +25,8 @@ from .const import DOMAIN, PLATFORMS, UPDATE_INTERVAL_SECONDS, IntegrationSettin
 from .hub import PetLibroHub
 from .push import PetLibroPush
 from .push.certificates import CertificateStore
-from .security import AccountCredentials, migrate_entry_data
+from .exceptions import PetLibroLoginRequired
+from .security import has_session, migrate_entry_data
 from .services import async_setup_services, async_unload_services
 
 _LOGGER = logging.getLogger(__name__)
@@ -169,24 +171,22 @@ def get_platforms_for_devices(devices: list[Device]) -> set[Platform]:
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Migrate old config entries.
 
-    1.1 → 1.2: the stored password is replaced by its digest (the API only needs the digest).
+    1.1 / 1.2 → 1.3: the stored password (1.1) or password digest (1.2) is removed; only the
+    session stays. When that session has ended, Home Assistant asks for the password again.
     """
     if entry.version > 1:
         return False
-    if entry.minor_version < 2:
-        hass.config_entries.async_update_entry(entry, data=migrate_entry_data(entry.data), minor_version=2)
-        _LOGGER.info("PETLIBRO: stored password replaced by its digest (config entry 1.2)")
+    if entry.minor_version < 3:
+        hass.config_entries.async_update_entry(entry, data=migrate_entry_data(entry.data), minor_version=3)
+        _LOGGER.info("PETLIBRO: stored password removed (config entry 1.3)")
     return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up platform from a ConfigEntry."""
-    # Ensure the e-mail and the password digest exist
-    try:
-        AccountCredentials.from_entry_data(entry.data)
-    except ValueError:
-        _LOGGER.error("Email or password is missing in the configuration entry. Cannot proceed.")
-        return False
+    # A stored session is needed; without one Home Assistant asks for the password
+    if not has_session(entry.data):
+        raise ConfigEntryAuthFailed("No PETLIBRO session stored; log in again")
 
     # Initialize PetLibroHub
     try:
@@ -219,6 +219,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         _LOGGER.info("Successfully set up the PetLibro integration")
         return True
+
+    except PetLibroLoginRequired as err:
+        raise ConfigEntryAuthFailed(str(err)) from err
 
     except Exception as err:
         _LOGGER.error(f"Failed to set up PetLibro integration: {err}", exc_info=True)

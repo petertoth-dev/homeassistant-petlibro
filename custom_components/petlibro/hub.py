@@ -7,15 +7,16 @@ from typing import Any
 from datetime import datetime, timedelta
 from .const import UPDATE_INTERVAL_SECONDS
 from homeassistant.core import HomeAssistant
-from homeassistant.const import CONF_REGION, CONF_API_TOKEN
+from homeassistant.const import CONF_API_TOKEN, CONF_EMAIL, CONF_REGION
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.helpers.device_registry import async_get as async_get_device_register
 from homeassistant.util.dt import utcnow
 from .api import PetLibroAPI  # Use a relative import if inside the same package
 from .const import IntegrationSetting
-from .security import AccountCredentials
+from .security import CONF_CLIENT_ID
 from .devices import Device, product_name_map
 from .member import Member
 from .pets import Pet
@@ -37,8 +38,8 @@ class PetLibroHub:
         self.last_refresh_times = {}  # Track the last refresh time for the member, each pet & each device
         self._last_online_status = {}  # Store online status per device
 
-        # E-mail + password digest (the password itself is never stored, see security.py)
-        credentials = AccountCredentials.from_entry_data(self.entry.data)
+        # The stored session (token + MQTT client id); no password is stored, see security.py
+        email = self.entry.data.get(CONF_EMAIL)
         region = self.entry.data.get(CONF_REGION)
 
         if not region:
@@ -52,10 +53,12 @@ class PetLibroHub:
             async_get_clientsession(hass),
             hass.config.time_zone,
             region,
-            credentials.email,
-            credentials.password_digest,
-            self.entry.data.get(CONF_API_TOKEN)
+            email,
+            None,  # no password: when the session ends, Home Assistant asks for it again
+            self.entry.data.get(CONF_API_TOKEN),
+            client_id=self.entry.data.get(CONF_CLIENT_ID),
         )
+        self.api.session.on_login_required = lambda: self.entry.async_start_reauth(hass)
 
         # Setup DataUpdateCoordinator to periodically refresh device data
         self.coordinator = DataUpdateCoordinator(
@@ -228,6 +231,7 @@ class PetLibroHub:
 
     async def refresh_data(self) -> bool:
         """Refresh all known devices, member and pets info from the PETLIBRO API."""
+        self._raise_if_login_required()
 
         # If the initial device load failed or returned no devices (e.g. a transient
         # API/server error during setup), retry so the integration can recover
@@ -305,6 +309,7 @@ class PetLibroHub:
                     "Refreshed %s successfully if needed: %s", obj_type, identifier
                 )
 
+        self._raise_if_login_required()
         if failures >= len(data_objects):
             raise UpdateFailed("All refresh operations failed.")
 
@@ -313,6 +318,11 @@ class PetLibroHub:
 
         _LOGGER.debug("Data refresh process finished.")
         return True
+
+    def _raise_if_login_required(self) -> None:
+        """Stop polling and let Home Assistant ask for the password once the session ended."""
+        if self.api.session.login_required:
+            raise ConfigEntryAuthFailed("The PETLIBRO session ended; log in again")
 
     async def _refresh_data_if_needed(
         self,

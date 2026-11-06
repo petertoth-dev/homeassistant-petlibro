@@ -1,16 +1,18 @@
-"""Credentials are stored as a digest and secrets never reach the logs."""
+"""Nothing password-like is stored, and secrets never reach the logs."""
 
 from hashlib import md5
 
-import pytest
-from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
+from homeassistant.const import CONF_API_TOKEN, CONF_EMAIL, CONF_PASSWORD, CONF_REGION
 
 from custom_components.petlibro.security import (
+    CONF_CLIENT_ID,
     CONF_PASSWORD_DIGEST,
     AccountCredentials,
+    has_session,
     migrate_entry_data,
     password_digest,
     redact,
+    session_entry_data,
 )
 
 PASSWORD = "correct horse battery staple"
@@ -21,31 +23,28 @@ def test_digest_is_what_the_api_logs_in_with():
     assert password_digest(PASSWORD) == DIGEST
 
 
-def test_credentials_from_a_form_keep_only_the_digest():
+def test_typed_password_is_hashed_and_never_shown():
     credentials = AccountCredentials.from_user_input("cat@example.invalid", PASSWORD)
-    data = credentials.as_entry_data()
-    assert data == {CONF_EMAIL: "cat@example.invalid", CONF_PASSWORD_DIGEST: DIGEST}
+    assert credentials.password_digest == DIGEST
     assert PASSWORD not in repr(credentials) and DIGEST not in repr(credentials)
 
 
-@pytest.mark.parametrize("data", [
-    {CONF_EMAIL: "cat@example.invalid", CONF_PASSWORD_DIGEST: DIGEST},
-    {CONF_EMAIL: "cat@example.invalid", CONF_PASSWORD: PASSWORD},  # entry not migrated yet
-])
-def test_credentials_from_entry_data(data):
-    assert AccountCredentials.from_entry_data(data).password_digest == DIGEST
+def test_entry_data_holds_the_session_only():
+    data = session_entry_data("US", "cat@example.invalid", "TOKEN", "CLIENT")
+    assert data == {CONF_REGION: "US", CONF_EMAIL: "cat@example.invalid", CONF_API_TOKEN: "TOKEN", CONF_CLIENT_ID: "CLIENT"}
+    assert has_session(data)
 
 
-@pytest.mark.parametrize("data", [{}, {CONF_EMAIL: "cat@example.invalid"}, {CONF_PASSWORD_DIGEST: DIGEST}])
-def test_incomplete_entry_data_is_rejected(data):
-    with pytest.raises(ValueError):
-        AccountCredentials.from_entry_data(data)
+def test_without_token_there_is_no_session():
+    assert not has_session({CONF_EMAIL: "cat@example.invalid"})
+    assert not has_session({CONF_API_TOKEN: "TOKEN"})
 
 
-def test_migration_replaces_the_password_and_keeps_everything_else():
-    migrated = migrate_entry_data({CONF_EMAIL: "e", CONF_PASSWORD: PASSWORD, "region": "US", "api_token": "t"})
-    assert migrated == {CONF_EMAIL: "e", CONF_PASSWORD_DIGEST: DIGEST, "region": "US", "api_token": "t"}
-    assert migrate_entry_data(migrated) == migrated  # idempotent
+def test_migration_removes_password_and_digest():
+    session = {CONF_EMAIL: "e", CONF_REGION: "US", CONF_API_TOKEN: "t"}
+    assert migrate_entry_data({**session, CONF_PASSWORD: PASSWORD}) == session  # 1.1
+    assert migrate_entry_data({**session, CONF_PASSWORD_DIGEST: DIGEST}) == session  # 1.2
+    assert migrate_entry_data(session) == session  # idempotent
 
 
 def test_redact_hides_secrets_at_any_depth():
@@ -57,3 +56,4 @@ def test_redact_hides_secrets_at_any_depth():
     assert redacted["data"]["memberId"] == 1 and redacted["data"]["pets"][0]["name"] == "Luna"
     assert answer["data"]["token"] == "T"  # the original is untouched
     assert redact("plain text") == "plain text"
+    assert redact({CONF_CLIENT_ID: "C", CONF_PASSWORD_DIGEST: "D"}) == {CONF_CLIENT_ID: "**REDACTED**", CONF_PASSWORD_DIGEST: "**REDACTED**"}

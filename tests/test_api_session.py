@@ -9,7 +9,7 @@ import pytest
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from custom_components.petlibro.api import PetLibroAPI
-from custom_components.petlibro.exceptions import PetLibroAPIError
+from custom_components.petlibro.exceptions import PetLibroAPIError, PetLibroLoginRequired
 
 BASE = "https://api.us.petlibro.com"
 EMAIL = "cat-owner@example.invalid"
@@ -114,3 +114,17 @@ async def test_push_endpoints(api, aioclient_mock):
     assert await api.certificate_authority() == {"caCertificate": "PEM"}
     assert await api.generate_certificate("CSR") == {"certificate": "C"}
     assert aioclient_mock.mock_calls[-1][2] == {"csr": "CSR"}
+
+
+async def test_a_stored_session_never_logs_in_and_asks_for_the_password(hass, aioclient_mock):
+    """No password is stored: an ended session asks the user instead of logging in."""
+    api = PetLibroAPI(async_get_clientsession(hass), "America/Los_Angeles", "US", EMAIL, None,
+                      "OLD-TOKEN", client_id="STORED-CLIENT")
+    asked = []
+    api.session.on_login_required = lambda: asked.append(True)
+    assert await api.session.async_ensure_client_id() == "STORED-CLIENT"  # stored with the token
+    aioclient_mock.post(f"{BASE}/member/member/info", json={"code": 1009, "msg": "NOT_YET_LOGIN"})
+    with pytest.raises(PetLibroLoginRequired):
+        await api.session.post("/member/member/info", json={})
+    assert asked == [True]
+    assert not any("/member/auth/login" in str(call[1]) for call in aioclient_mock.mock_calls)

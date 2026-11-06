@@ -17,11 +17,12 @@ import asyncio
 from logging import getLogger
 import sys
 from urllib.parse import urljoin
+from collections.abc import Callable
 from typing import Any, Dict, List, TypeAlias
 from datetime import timedelta
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util.dt import utcnow
-from .exceptions import PetLibroAPIError
+from .exceptions import PetLibroAPIError, PetLibroLoginRequired
 from .security import password_digest as make_password_digest, redact
 from aiohttp import ClientSession
 
@@ -34,16 +35,22 @@ _LOGGER = getLogger(__name__)
 class PetLibroSession:
     """PetLibro AIOHTTP session"""
     
-    def __init__(self, base_url: str, websession: ClientSession, email: str, password_digest: str, region: str, token: str | None = None, time_zone: str | None = None):
+    def __init__(self, base_url: str, websession: ClientSession, email: str, password_digest: str | None, region: str, token: str | None = None, time_zone: str | None = None, client_id: str | None = None):
         self.base_url = base_url
         self.websession = websession
         self.token = token
         self.email = email
-        self.password_digest = password_digest  # MD5 of the password; the password itself is never kept
+        # MD5 of the password, only while a login form runs; None for a stored session,
+        # which then cannot log in by itself (see security.py).
+        self.password_digest = password_digest
         self.region = region
-        # The login's MQTT identity (client id = username = password on PETLIBRO's broker).
-        # Known only after a login in this run; a new login replaces it.
-        self.client_id: str | None = None
+        # The login's MQTT identity (client id = username = password on PETLIBRO's broker),
+        # stored with the token; a new login replaces both.
+        self.client_id: str | None = client_id
+        # Called when the session ended and nobody can log in again without the password.
+        self.on_login_required: Callable[[], None] | None = None
+        # True once PETLIBRO ended a stored session; stays until the entry reloads after a new login.
+        self.login_required = False
         self._login_lock = asyncio.Lock()
         self.headers = {
             "source": "ANDROID",
@@ -145,6 +152,12 @@ class PetLibroSession:
 
     async def re_login(self) -> str:
         """Re-login to get a new token when the old one expires."""
+        if not self.password_digest:
+            # No password is stored: Home Assistant has to ask for it (re-authentication).
+            self.login_required = True
+            if self.on_login_required:
+                self.on_login_required()
+            raise PetLibroLoginRequired("The PETLIBRO session ended; log in again in Home Assistant")
         try:
             _LOGGER.debug("Attempting re-login (region %s)", self.region)
 
@@ -228,9 +241,9 @@ class PetLibroAPI:
         "US": "https://api.us.petlibro.com"
     }
 
-    def __init__(self, session: ClientSession, time_zone: str, region: str, email: str, password_digest: str, token: str | None = None, config_entry=None, hass=None):
-        """Initialize with the account e-mail and the password digest (see security.password_digest)."""
-        self.session = PetLibroSession(self.API_URLS[region], session, email, password_digest, region, token, time_zone)
+    def __init__(self, session: ClientSession, time_zone: str, region: str, email: str, password_digest: str | None, token: str | None = None, config_entry=None, hass=None, client_id: str | None = None):
+        """Initialize with the account e-mail and either a password digest (login forms) or a stored session."""
+        self.session = PetLibroSession(self.API_URLS[region], session, email, password_digest, region, token, time_zone, client_id)
         self.region = region
         self.time_zone = time_zone
         self.email = email  # Store email for login/re-login

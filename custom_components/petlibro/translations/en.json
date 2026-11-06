@@ -19,7 +19,7 @@
                 }
             },
             "reauth_confirm": {
-                "description": "The PETLIBRO integration needs to re-authenticate your account",
+                "description": "The PETLIBRO session ended. Enter your password to log in again; it is used for this login only and not stored.",
                 "data": {
                     "password": "Password"
                 }

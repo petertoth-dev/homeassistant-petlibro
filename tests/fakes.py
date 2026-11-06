@@ -78,6 +78,8 @@ class FakeSession:
     def __init__(self, client_id: str | None = None) -> None:
         self.client_id = client_id
         self.logins = 0
+        self.login_required = False
+        self.on_login_required = None
 
     async def re_login(self) -> str:
         self.logins += 1

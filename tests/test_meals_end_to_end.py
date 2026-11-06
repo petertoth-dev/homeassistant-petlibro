@@ -4,7 +4,6 @@ import asyncio
 import json
 import logging
 from datetime import timedelta
-from hashlib import md5
 
 from homeassistant.core import State
 from homeassistant.helpers import entity_registry as er
@@ -12,7 +11,6 @@ from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry, mock_restore_cache_with_extra_data
 
 from custom_components.petlibro.const import DOMAIN, IntegrationSetting
-from custom_components.petlibro.security import CONF_PASSWORD_DIGEST
 
 from .fakes import DUO_SERIAL, LUNA, MILO, POLAR_SERIAL, meal_record, ms
 
@@ -21,8 +19,8 @@ NO_PUSH = {IntegrationSetting.ENABLE_LIVE_UPDATES: False}  # these tests drive t
 
 
 def entry(hass):
-    config_entry = MockConfigEntry(domain=DOMAIN, version=1, minor_version=2, options=NO_PUSH, data={
-        "email": "tester@example.invalid", CONF_PASSWORD_DIGEST: md5(b"x").hexdigest(), "region": "US", "api_token": "t"})
+    config_entry = MockConfigEntry(domain=DOMAIN, version=1, minor_version=3, options=NO_PUSH, data={
+        "email": "tester@example.invalid", "region": "US", "api_token": "t"})
     config_entry.add_to_hass(hass)
     return config_entry
 
