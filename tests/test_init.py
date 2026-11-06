@@ -141,6 +141,7 @@ async def test_an_ended_session_asks_for_the_password(hass, cloud, broker):
         assert not await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
     assert entry.state is ConfigEntryState.SETUP_ERROR
+    assert entry.reason == "The PETLIBRO session ended; log in again"  # reached HA as an auth failure
     assert len(list(entry.async_get_active_flows(hass, {"reauth"}))) == 1  # started once, not twice
     assert cloud["api"].session.logins == 0
     assert FakeCloud.member_info is cloud_member_info

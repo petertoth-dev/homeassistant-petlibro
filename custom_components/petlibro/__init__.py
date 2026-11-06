@@ -220,6 +220,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.info("Successfully set up the PetLibro integration")
         return True
 
+    except ConfigEntryAuthFailed:
+        raise  # Home Assistant marks the entry and asks for the password
+
     except PetLibroLoginRequired as err:
         raise ConfigEntryAuthFailed(str(err)) from err
 
