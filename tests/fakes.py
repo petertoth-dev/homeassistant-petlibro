@@ -17,11 +17,11 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
-MEMBER_ID = 190705099
+MEMBER_ID = 100000001
 DUO_SERIAL = "AF0901030388412DUO1"
 GRANARY_SERIAL = "AF01GRANARY0AD74"
 POLAR_SERIAL = "AF05POLAR00017SL"
-HORUSZ, MARGIE = 705615, 1703837
+LUNA, MILO = 1001, 1002
 
 
 def ms(moment: datetime) -> int:
@@ -146,8 +146,8 @@ class FakeCloud:
         self.manual_feed_id: int | None = None
         self.refresh_calls: dict[str, int] = {}
         pets = [
-            {"id": HORUSZ, "name": "Horusz", "memberId": 1, "type": 2, "breedId": 7, "breedName": "Domestic Shorthair"},
-            {"id": MARGIE, "name": "Margie", "memberId": 1, "type": 2, "breedId": 7, "breedName": "Domestic Shorthair"},
+            {"id": LUNA, "name": "Luna", "memberId": 1, "type": 2, "breedId": 7, "breedName": "Domestic Shorthair"},
+            {"id": MILO, "name": "Milo", "memberId": 1, "type": 2, "breedId": 7, "breedName": "Domestic Shorthair"},
         ]
         self.pets = SimpleNamespace(
             get_list=AsyncMock(return_value={"petList": pets}),

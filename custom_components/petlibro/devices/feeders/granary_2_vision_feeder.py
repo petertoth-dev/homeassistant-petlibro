@@ -166,7 +166,7 @@ class Granary2VisionFeeder(GranarySmartCameraFeeder):
 
         `petsInfo` lists the pets that ate (each with its own grams and seconds; their
         grams add up to the visit's `intake`). `showUpPetsInfo` lists pets that came to
-        the bowl during the visit without eating ("Horusz show up", petId -1 when not
+        the bowl during the visit without eating ("Luna show up", petId -1 when not
         recognized).
         """
         record_ms = _epoch_ms(record.get("recordTime"))

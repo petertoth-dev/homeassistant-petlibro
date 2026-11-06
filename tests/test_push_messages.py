@@ -23,12 +23,12 @@ from paho.mqtt.client import convert_connack_rc_to_reason_code
 
 
 def test_subscription_topics():
-    assert member_topic(190705099) == "dl/member/190705099/sub"
+    assert member_topic(100000001) == "dl/member/100000001/sub"
     assert device_topic("PLAF205", "SN1") == "dl/PLAF205/SN1/app/+/sub"
 
 
 @pytest.mark.parametrize(("topic", "expected"), [
-    ("dl/member/190705099/sub", (TopicScope.MEMBER, None, None, None)),
+    ("dl/member/100000001/sub", (TopicScope.MEMBER, None, None, None)),
     ("dl/PLAF109/SN1/app/event/sub", (TopicScope.DEVICE, "PLAF109", "SN1", "event")),
 ])
 def test_parse_topic(topic, expected):

@@ -26,7 +26,7 @@ from custom_components.petlibro.sensor import DEVICE_SENSOR_MAP, PetLibroSensorE
 from .fakes import meal_record, ms
 
 TZ = "America/Los_Angeles"
-HORUSZ, MARGIE = 1001, 1002
+LUNA, MILO = 1001, 1002
 
 
 def today_at(hour: int, minute: int, second: int = 0) -> datetime:
@@ -146,14 +146,14 @@ async def test_messages_are_cached_for_ten_seconds():
 async def test_meals_split_per_pet(hass):
     hub = make_hub(hass)
     feeder = make_feeder(hub)
-    make_pet(hub, HORUSZ, "Horusz")
-    make_pet(hub, MARGIE, "Margie")
+    make_pet(hub, LUNA, "Luna")
+    make_pet(hub, MILO, "Milo")
     hub.api.get_device_meal_records.return_value = [
-        # Horusz alone: petsInfo repeats the visit's intake.
-        meal_record(1, today_at(7, 0), 66, 12.0, [{"petId": HORUSZ, "intake": 12.0}]),
+        # Luna alone: petsInfo repeats the visit's intake.
+        meal_record(1, today_at(7, 0), 66, 12.0, [{"petId": LUNA, "intake": 12.0}]),
         # Shared visit: the camera split it per pet.
         meal_record(2, today_at(12, 0), 200, 20.0,
-                    [{"petId": HORUSZ, "intake": 5.0, "duration": 50}, {"petId": MARGIE, "intake": 15.0, "duration": 150}]),
+                    [{"petId": LUNA, "intake": 5.0, "duration": 50}, {"petId": MILO, "intake": 15.0, "duration": 150}]),
         # Nobody recognized.
         meal_record(3, today_at(18, 30), 30, 4.5, [{"petId": -1, "intake": 4.5}]),
         # No petsInfo at all.
@@ -168,7 +168,7 @@ async def test_meals_split_per_pet(hass):
     meals = feeder.today_meals
     assert [meal["id"] for meal in meals] == [1, 2, 3, 4]
     assert meals[0]["seconds"] == 66 and meals[0]["pets"][0]["seconds"] == 66
-    assert [share["name"] for share in meals[1]["pets"]] == ["Horusz", "Margie"]
+    assert [share["name"] for share in meals[1]["pets"]] == ["Luna", "Milo"]
     assert meals[2]["pets"][0]["name"] == "Unknown"
     assert feeder.today_consumed_food_weight == 37.5
     assert feeder.today_meal_count == 4
@@ -176,16 +176,16 @@ async def test_meals_split_per_pet(hass):
     assert feeder.last_meal_pet == "Unknown"  # meal 4 had no petsInfo
     assert feeder.last_meal_time == today_at(19, 0)
 
-    horusz = feeder.pet_meals_today(HORUSZ)
-    assert [(meal["grams"], meal["seconds"]) for meal in horusz] == [(12.0, 66), (5.0, 50)]
+    luna = feeder.pet_meals_today(LUNA)
+    assert [(meal["grams"], meal["seconds"]) for meal in luna] == [(12.0, 66), (5.0, 50)]
 
 
 async def test_failed_read_makes_totals_unknown_but_keeps_last_meal(hass):
     hub = make_hub(hass)
     feeder = make_feeder(hub)
-    make_pet(hub, HORUSZ, "Horusz")
+    make_pet(hub, LUNA, "Luna")
     hub.api.get_device_meal_records.return_value = [
-        meal_record(1, today_at(7, 0), 66, 12.0, [{"petId": HORUSZ, "intake": 12.0}]),
+        meal_record(1, today_at(7, 0), 66, 12.0, [{"petId": LUNA, "intake": 12.0}]),
     ]
     await feeder.refresh()
     hub.api.get_device_meal_records.side_effect = PetLibroAPIError("boom")
@@ -193,8 +193,8 @@ async def test_failed_read_makes_totals_unknown_but_keeps_last_meal(hass):
     assert feeder.today_meals is None
     assert feeder.today_consumed_food_weight is None
     assert feeder.today_meal_count is None
-    assert feeder.last_meal_pet == "Horusz"
-    assert feeder.last_meal_by_pet[HORUSZ]["grams"] == 12.0
+    assert feeder.last_meal_pet == "Luna"
+    assert feeder.last_meal_by_pet[LUNA]["grams"] == 12.0
 
 
 async def test_records_from_yesterday_are_not_today(hass, monkeypatch):
@@ -211,33 +211,33 @@ async def test_records_from_yesterday_are_not_today(hass, monkeypatch):
 async def test_pet_totals_across_two_feeders(hass):
     hub = make_hub(hass)
     kitchen, office = make_feeder(hub, "vision-1", "Kitchen"), make_feeder(hub, "vision-2", "Office Duo")
-    horusz, margie = make_pet(hub, HORUSZ, "Horusz"), make_pet(hub, MARGIE, "Margie")
+    luna, milo = make_pet(hub, LUNA, "Luna"), make_pet(hub, MILO, "Milo")
     hub.api.get_device_meal_records.return_value = [
-        meal_record(1, today_at(7, 0), 66, 12.0, [{"petId": HORUSZ, "intake": 12.0}]),
+        meal_record(1, today_at(7, 0), 66, 12.0, [{"petId": LUNA, "intake": 12.0}]),
     ]
     await kitchen.refresh()
     hub.api.get_device_meal_records.return_value = [
-        meal_record(2, today_at(9, 0), 120, 9.0, [{"petId": HORUSZ, "intake": 9.0}]),
-        meal_record(3, today_at(9, 30), 60, 7.0, [{"petId": MARGIE, "intake": 7.0}]),
+        meal_record(2, today_at(9, 0), 120, 9.0, [{"petId": LUNA, "intake": 9.0}]),
+        meal_record(3, today_at(9, 30), 60, 7.0, [{"petId": MILO, "intake": 7.0}]),
     ]
     await office.refresh()
 
-    assert horusz.today_feeder_intake == 21.0
-    assert horusz.today_feeder_meal_count == 2
-    assert horusz.today_feeder_eating_time == 186
-    assert horusz.last_feeder_meal["feeder"] == "Office Duo"
-    assert horusz.last_feeder_meal_time == today_at(9, 0)
-    assert margie.today_feeder_intake == 7.0
+    assert luna.today_feeder_intake == 21.0
+    assert luna.today_feeder_meal_count == 2
+    assert luna.today_feeder_eating_time == 186
+    assert luna.last_feeder_meal["feeder"] == "Office Duo"
+    assert luna.last_feeder_meal_time == today_at(9, 0)
+    assert milo.today_feeder_intake == 7.0
 
     hub.api.get_device_meal_records.side_effect = PetLibroAPIError("boom")
     await office.refresh()
-    assert horusz.today_feeder_intake is None  # never a smaller, partial total
-    assert horusz.last_feeder_meal["grams"] == 9.0
+    assert luna.today_feeder_intake is None  # never a smaller, partial total
+    assert luna.last_feeder_meal["grams"] == 9.0
 
 
 async def test_pet_meal_sensors_only_exist_with_a_vision_feeder(hass):
     hub = make_hub(hass)
-    pet = make_pet(hub, HORUSZ, "Horusz")
+    pet = make_pet(hub, LUNA, "Luna")
     meal_keys = {"today_feeder_intake", "today_feeder_meal_count", "today_feeder_eating_time", "last_feeder_meal_time"}
     keys = {d.key for d in PET_ENTITY_MAP[PL_PetSensorEntity] if d.create_fn(pet)}
     assert not keys & meal_keys
@@ -249,9 +249,9 @@ async def test_pet_meal_sensors_only_exist_with_a_vision_feeder(hass):
 async def test_pet_sensor_entity_values(hass):
     hub = make_hub(hass)
     feeder = make_feeder(hub)
-    pet = make_pet(hub, HORUSZ, "Horusz")
+    pet = make_pet(hub, LUNA, "Luna")
     hub.api.get_device_meal_records.return_value = [
-        meal_record(1, today_at(7, 0), 66, 12.0, [{"petId": HORUSZ, "intake": 12.0}]),
+        meal_record(1, today_at(7, 0), 66, 12.0, [{"petId": LUNA, "intake": 12.0}]),
     ]
     await feeder.refresh()
     by_key = {d.key: d for d in PET_ENTITY_MAP[PL_PetSensorEntity]}
@@ -269,18 +269,18 @@ async def test_pet_sensor_entity_values(hass):
 async def test_feeder_sensor_entities(hass):
     hub = make_hub(hass)
     feeder = make_feeder(hub)
-    make_pet(hub, HORUSZ, "Horusz")
-    make_pet(hub, MARGIE, "Margie")
+    make_pet(hub, LUNA, "Luna")
+    make_pet(hub, MILO, "Milo")
     hub.api.get_device_meal_records.return_value = [
-        meal_record(2, today_at(12, 0), 200, 20.0, [{"petId": HORUSZ, "intake": 5.0}, {"petId": MARGIE, "intake": 15.0}]),
+        meal_record(2, today_at(12, 0), 200, 20.0, [{"petId": LUNA, "intake": 5.0}, {"petId": MILO, "intake": 15.0}]),
     ]
     await feeder.refresh()
     by_key = {d.key: d for d in DEVICE_SENSOR_MAP[Granary2VisionFeeder]}
     eaten = PetLibroSensorEntity(feeder, hub, by_key["today_consumed_food_weight"])
     assert eaten.native_value == 20.0
-    assert eaten.extra_state_attributes["meals"][0]["pets"][1] == {"name": "Margie", "grams": 15.0, "seconds": None}
+    assert eaten.extra_state_attributes["meals"][0]["pets"][1] == {"name": "Milo", "grams": 15.0, "seconds": None}
     who = PetLibroSensorEntity(feeder, hub, by_key["last_meal_pet"])
-    assert who.native_value == "Horusz, Margie"
+    assert who.native_value == "Luna, Milo"
     assert who.extra_state_attributes["grams"] == 20.0
     when = PetLibroSensorEntity(feeder, hub, by_key["last_meal_time"])
     assert when.native_value == today_at(12, 0)
@@ -293,7 +293,7 @@ async def test_notifications_are_matched_by_serial(hass):
     feeder = make_feeder(hub)
     hub.api.device_messages.return_value = [
         {"id": 7, "eventKey": "DETECTION_MOVE", "timestamp": ms(today_at(8, 0)),
-         "param": json.dumps({"deviceSn": "vision-1", "petName": "Horusz"}), "imageUrl": None,
+         "param": json.dumps({"deviceSn": "vision-1", "petName": "Luna"}), "imageUrl": None,
          "title": "Motion", "content": "Motion detected"},
         {"id": 8, "eventKey": "DETECTION_MOVE", "timestamp": ms(today_at(8, 1)),
          "param": json.dumps({"deviceSn": "other-feeder"})},
@@ -302,7 +302,7 @@ async def test_notifications_are_matched_by_serial(hass):
     await feeder.refresh()
     [notification] = feeder.notifications
     assert notification["id"] == 7
-    assert notification["details"] == {"petName": "Horusz"}
+    assert notification["details"] == {"petName": "Luna"}
     assert notification["message"] == "Motion detected" and "image_url" not in notification
 
 
@@ -318,8 +318,8 @@ def make_event_entity(feeder, hub, key):
 async def test_meal_event_fires_once_per_new_finished_meal(hass):
     hub = make_hub(hass)
     feeder = make_feeder(hub)
-    make_pet(hub, HORUSZ, "Horusz")
-    records = [meal_record(1, today_at(7, 0), 66, 12.0, [{"petId": HORUSZ, "intake": 12.0}])]
+    make_pet(hub, LUNA, "Luna")
+    records = [meal_record(1, today_at(7, 0), 66, 12.0, [{"petId": LUNA, "intake": 12.0}])]
     hub.api.get_device_meal_records.return_value = records
     await feeder.refresh()
     entity = make_event_entity(feeder, hub, "meal")
@@ -327,21 +327,21 @@ async def test_meal_event_fires_once_per_new_finished_meal(hass):
     entity._process_items()  # fresh install: existing meals don't fire
     assert entity.async_write_ha_state.call_count == 0
 
-    unfinished = meal_record(2, dt_util.now() - timedelta(minutes=1), 30, 3.0, [{"petId": HORUSZ, "intake": 3.0}])
+    unfinished = meal_record(2, dt_util.now() - timedelta(minutes=1), 30, 3.0, [{"petId": LUNA, "intake": 3.0}])
     unfinished.pop("eatingEndTime")
     records.append(unfinished)
     await feeder.refresh()
     entity._process_items()
     assert entity.async_write_ha_state.call_count == 0  # still eating
 
-    records[1] = meal_record(2, dt_util.now() - timedelta(minutes=1), 30, 3.0, [{"petId": HORUSZ, "intake": 3.0}])
+    records[1] = meal_record(2, dt_util.now() - timedelta(minutes=1), 30, 3.0, [{"petId": LUNA, "intake": 3.0}])
     await feeder.refresh()
     entity._process_items()
     entity._process_items()
     assert entity.async_write_ha_state.call_count == 1
     attributes = entity.state_attributes
     assert attributes["event_type"] == "meal"
-    assert attributes["pet_names"] == ["Horusz"]
+    assert attributes["pet_names"] == ["Luna"]
     assert attributes["grams"] == 3.0 and attributes["seconds"] == 30
     assert attributes["record_time"]
 
@@ -381,15 +381,15 @@ async def test_notification_event(hass):
 
 # Two real Vision Duo records (2026-10-23 and 10-24), serial and photo links removed.
 REAL_RECORDS = [
-    {"id": "f18b646b42cf4c37987a3f3c37b183c6", "type": "MEAL_RECORD", "eventType": "PET_EATING_RECORD_EVENT",
-     "recordTime": 1792762208069, "duration": 2, "intake": 7, "petIds": [1703837, 705615], "petName": "Margie,Horusz",
-     "petsInfo": [{"petId": 1703837, "petName": "Margie", "intake": 7, "duration": 157, "speed": "SLOW"}],
-     "showUpPetsInfo": [{"petId": 705615, "petName": "Horusz", "intake": 0, "duration": 116, "speed": None}],
+    {"id": "00000000000000000000000000000001", "type": "MEAL_RECORD", "eventType": "PET_EATING_RECORD_EVENT",
+     "recordTime": 1792762208069, "duration": 2, "intake": 7, "petIds": [1002, 1001], "petName": "Milo,Luna",
+     "petsInfo": [{"petId": 1002, "petName": "Milo", "intake": 7, "duration": 157, "speed": "SLOW"}],
+     "showUpPetsInfo": [{"petId": 1001, "petName": "Luna", "intake": 0, "duration": 116, "speed": None}],
      "petEnterTime": 1792762208069, "petEatingStartTime": 1792762208069, "eatingEndTime": 1792762380426},
-    {"id": "11d3442f92ad41419b7f508a64d6c11e", "type": "MEAL_RECORD", "eventType": "PET_EATING_RECORD_EVENT",
-     "recordTime": 1792848613676, "duration": 2, "intake": 14, "petIds": [-1, 705615, 1703837],
-     "petsInfo": [{"petId": 705615, "petName": "Horusz", "intake": 10, "duration": 173},
-                  {"petId": 1703837, "petName": "Margie", "intake": 4, "duration": 94}],
+    {"id": "00000000000000000000000000000002", "type": "MEAL_RECORD", "eventType": "PET_EATING_RECORD_EVENT",
+     "recordTime": 1792848613676, "duration": 2, "intake": 14, "petIds": [-1, 1001, 1002],
+     "petsInfo": [{"petId": 1001, "petName": "Luna", "intake": 10, "duration": 173},
+                  {"petId": 1002, "petName": "Milo", "intake": 4, "duration": 94}],
      "showUpPetsInfo": [{"petId": -1, "petName": "Unknown pet", "intake": 0, "duration": 5}],
      "petEnterTime": 1792848613676, "petEatingStartTime": 1792848613676, "eatingEndTime": 1792848788879},
 ]
@@ -402,10 +402,10 @@ async def test_real_vision_duo_records(hass):
     feeder._data["mealRecords"] = {"day": dt_util.now().date().isoformat(), "records": REAL_RECORDS}
     first, second = feeder.today_meals
     assert first["seconds"] == 172 and first["grams"] == 7.0
-    assert first["pets"] == [{"pet_id": 1703837, "name": "Margie", "grams": 7.0, "seconds": 157.0}]
-    assert first["show_ups"] == [{"pet_id": 705615, "name": "Horusz", "grams": 0.0, "seconds": 116.0}]
-    assert [(p["name"], p["grams"], p["seconds"]) for p in second["pets"]] == [("Horusz", 10.0, 173.0), ("Margie", 4.0, 94.0)]
+    assert first["pets"] == [{"pet_id": 1002, "name": "Milo", "grams": 7.0, "seconds": 157.0}]
+    assert first["show_ups"] == [{"pet_id": 1001, "name": "Luna", "grams": 0.0, "seconds": 116.0}]
+    assert [(p["name"], p["grams"], p["seconds"]) for p in second["pets"]] == [("Luna", 10.0, 173.0), ("Milo", 4.0, 94.0)]
     assert second["show_ups"][0]["name"] == "Unknown"
     assert feeder.today_consumed_food_weight == 21.0
-    assert [m["grams"] for m in feeder.pet_meals_today(705615)] == [10.0]
-    assert [m["seconds"] for m in feeder.pet_meals_today(1703837)] == [157.0, 94.0]
+    assert [m["grams"] for m in feeder.pet_meals_today(1001)] == [10.0]
+    assert [m["seconds"] for m in feeder.pet_meals_today(1002)] == [157.0, 94.0]

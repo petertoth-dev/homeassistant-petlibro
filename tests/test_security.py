@@ -50,10 +50,10 @@ def test_migration_replaces_the_password_and_keeps_everything_else():
 
 def test_redact_hides_secrets_at_any_depth():
     answer = {"code": 0, "data": {"token": "T", "clientId": "C", "memberId": 1,
-                                  "pets": [{"name": "Horusz", "thumbnailSignedUrl": "https://x"}]}}
+                                  "pets": [{"name": "Luna", "thumbnailSignedUrl": "https://x"}]}}
     redacted = redact(answer)
     assert redacted["data"]["token"] == redacted["data"]["clientId"] == "**REDACTED**"
     assert redacted["data"]["pets"][0]["thumbnailSignedUrl"] == "**REDACTED**"
-    assert redacted["data"]["memberId"] == 1 and redacted["data"]["pets"][0]["name"] == "Horusz"
+    assert redacted["data"]["memberId"] == 1 and redacted["data"]["pets"][0]["name"] == "Luna"
     assert answer["data"]["token"] == "T"  # the original is untouched
     assert redact("plain text") == "plain text"

@@ -14,7 +14,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry, mock_r
 from custom_components.petlibro.const import DOMAIN, IntegrationSetting
 from custom_components.petlibro.security import CONF_PASSWORD_DIGEST
 
-from .fakes import DUO_SERIAL, HORUSZ, MARGIE, POLAR_SERIAL, meal_record, ms
+from .fakes import DUO_SERIAL, LUNA, MILO, POLAR_SERIAL, meal_record, ms
 
 DUO_MAC = "AABBCCDDEE01"
 NO_PUSH = {IntegrationSetting.ENABLE_LIVE_UPDATES: False}  # these tests drive the polls themselves
@@ -50,9 +50,9 @@ async def poll(hass, hub):
 def three_meals():
     start_time = dt_util.now() - timedelta(hours=2)
     return [
-        meal_record(1, start_time, 66, 12.0, [{"petId": HORUSZ, "intake": 12.0, "duration": 60}]),
+        meal_record(1, start_time, 66, 12.0, [{"petId": LUNA, "intake": 12.0, "duration": 60}]),
         meal_record(2, start_time + timedelta(minutes=30), 200, 20.0,
-                    [{"petId": HORUSZ, "intake": 5.0, "duration": 80}, {"petId": MARGIE, "intake": 15.0, "duration": 120}]),
+                    [{"petId": LUNA, "intake": 5.0, "duration": 80}, {"petId": MILO, "intake": 15.0, "duration": 120}]),
         meal_record(3, start_time + timedelta(minutes=60), 30, 4.5, [{"petId": -1, "intake": 4.5}]),
     ]
 
@@ -67,20 +67,20 @@ async def test_meals_per_cat_and_a_new_meal(hass, cloud, caplog, freezer):
 
     eaten = hass.states.get(entity_id(hass, "sensor", f"{DUO_SERIAL}-today_consumed_food_weight-{DUO_MAC}"))
     assert eaten.state == "36.5" and [m["grams"] for m in eaten.attributes["meals"]] == [12.0, 20.0, 4.5]
-    assert hass.states.get(entity_id(hass, "sensor", f"{DOMAIN}-today_feeder_intake-{HORUSZ}")).state == "17.0"
-    assert hass.states.get(entity_id(hass, "sensor", f"{DOMAIN}-today_feeder_intake-{MARGIE}")).state == "15.0"
+    assert hass.states.get(entity_id(hass, "sensor", f"{DOMAIN}-today_feeder_intake-{LUNA}")).state == "17.0"
+    assert hass.states.get(entity_id(hass, "sensor", f"{DOMAIN}-today_feeder_intake-{MILO}")).state == "15.0"
     meal_event = entity_id(hass, "event", f"{DUO_SERIAL}-meal")
     assert hass.states.get(meal_event).state == "unknown"  # existing meals do not fire on install
 
     api.meals.append(meal_record(4, dt_util.now() - timedelta(minutes=3), 90, 6.0,
-                                 [{"petId": MARGIE, "intake": 6.0, "duration": 90}]))
+                                 [{"petId": MILO, "intake": 6.0, "duration": 90}]))
     api.messages.insert(0, {"id": 502, "eventKey": "FOOD_LOW", "timestamp": ms(dt_util.now()),
                             "param": json.dumps({"deviceSn": DUO_SERIAL})})
     await poll(hass, hub)
     fired = hass.states.get(meal_event)
-    assert fired.attributes["pet_names"] == ["Margie"] and fired.attributes["grams"] == 6.0
+    assert fired.attributes["pet_names"] == ["Milo"] and fired.attributes["grams"] == 6.0
     assert hass.states.get(entity_id(hass, "event", f"{DUO_SERIAL}-notification")).attributes["event_key"] == "FOOD_LOW"
-    assert hass.states.get(entity_id(hass, "sensor", f"{DOMAIN}-today_feeder_intake-{MARGIE}")).state == "21.0"
+    assert hass.states.get(entity_id(hass, "sensor", f"{DOMAIN}-today_feeder_intake-{MILO}")).state == "21.0"
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR and "petlibro" in r.name]
 
 
