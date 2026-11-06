@@ -9,6 +9,11 @@
   "integration_type": "hub",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/jjjonesjr33/petlibro/issues",
-  "loggers": ["petlibro"],
+  "loggers": [
+    "petlibro"
+  ],
+  "requirements": [
+    "aiomqtt==2.5.1"
+  ],
   "version": "1.3"
 }

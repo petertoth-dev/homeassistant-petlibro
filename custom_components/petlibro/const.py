@@ -187,6 +187,7 @@ class IntegrationSetting(StrEnum):
     
     MANUAL_FEED_PORTIONS = "manual_feed_portions", False
     ENABLE_SHARED_PETS = "enable_shared_pets", True
+    ENABLE_LIVE_UPDATES = "enable_live_updates", True
 
     def __new__(cls, value: str, default: bool):
         obj = str.__new__(cls, value)

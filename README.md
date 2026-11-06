@@ -42,6 +42,17 @@ If you enjoy this integration and want to support its development, please consid
   * Event entities: **Meal** fires once per finished meal (`pet_names`, `grams`, `seconds`, the per-pet split); **Notification** fires for each of the feeder's message-center alerts (`event_key`, `details`). Both land in the logbook and history and can trigger automations; meals eaten while Home Assistant was down fire after it restarts
 * One RFID Smart Feeder (PLAF301)
 
+### Live updates
+Devices update as soon as they change (for example a lid opened in the app), instead of on the next
+60-second poll: the integration listens on the same push channel the PETLIBRO app uses. It is on by
+default and can be turned off in the integration settings ("Live updates (push)"). Details in
+[docs/api-documentation.md](docs/api-documentation.md#live-updates-the-apps-mqtt-channel).
+
+### Credentials
+The integration stores your e-mail and only the MD5 digest of your password (the API never needs the
+password itself); existing entries are converted automatically. Tokens, the digest, the MQTT login and
+certificates are redacted from logs.
+
 ### Fountains
 * Dockstream Smart Fountain (PLWF105)
 * Dockstream RFID Smart Fountain (PLWF305)

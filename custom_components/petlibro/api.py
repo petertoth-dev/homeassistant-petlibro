@@ -15,7 +15,6 @@
 
 import asyncio
 from logging import getLogger
-from hashlib import md5
 import sys
 from urllib.parse import urljoin
 from typing import Any, Dict, List, TypeAlias
@@ -23,6 +22,7 @@ from datetime import timedelta
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util.dt import utcnow
 from .exceptions import PetLibroAPIError
+from .security import password_digest as make_password_digest, redact
 from aiohttp import ClientSession
 
 import aiohttp
@@ -34,13 +34,17 @@ _LOGGER = getLogger(__name__)
 class PetLibroSession:
     """PetLibro AIOHTTP session"""
     
-    def __init__(self, base_url: str, websession: ClientSession, email: str, password: str, region: str, token: str | None = None, time_zone: str | None = None):
+    def __init__(self, base_url: str, websession: ClientSession, email: str, password_digest: str, region: str, token: str | None = None, time_zone: str | None = None):
         self.base_url = base_url
         self.websession = websession
         self.token = token
         self.email = email
-        self.password = password
+        self.password_digest = password_digest  # MD5 of the password; the password itself is never kept
         self.region = region
+        # The login's MQTT identity (client id = username = password on PETLIBRO's broker).
+        # Known only after a login in this run; a new login replaces it.
+        self.client_id: str | None = None
+        self._login_lock = asyncio.Lock()
         self.headers = {
             "source": "ANDROID",
             "language": "EN",
@@ -111,7 +115,7 @@ class PetLibroSession:
                 except Exception as e:
                     raise PetLibroAPIError(f"Error parsing response JSON: {e}")
 
-                _LOGGER.debug(f"Response data: {data}")
+                _LOGGER.debug("Response data: %s", redact(data))
 
                 if resp.status != 200:
                     raise PetLibroAPIError(f"Request failed with status: {resp.status}")
@@ -126,12 +130,12 @@ class PetLibroSession:
             # Trigger a re-login and get the new token
             new_token = await self.re_login()
             kwargs["headers"]["token"] = new_token
-            _LOGGER.debug(f"Retrying request with new token: {new_token}")
+            _LOGGER.debug("Retrying request with the new token")
 
             # Retry the request with the new token
             async with self.websession.request(method, joined_url, **kwargs) as retry_resp:
                 retry_data = await retry_resp.json()
-                _LOGGER.debug(f"Retry response: {retry_data}")
+                _LOGGER.debug("Retry response: %s", redact(retry_data))
                 return retry_data.get("data")
 
         if data.get("code") != 0:
@@ -142,7 +146,7 @@ class PetLibroSession:
     async def re_login(self) -> str:
         """Re-login to get a new token when the old one expires."""
         try:
-            _LOGGER.debug(f"Attempting re-login with email: {self.email} and region: {self.region}")
+            _LOGGER.debug("Attempting re-login (region %s)", self.region)
 
             async with self.websession.post(
                 urljoin(self.base_url, "/member/auth/login"),
@@ -151,7 +155,7 @@ class PetLibroSession:
                     "appSn": PetLibroAPI.APPSN,
                     "country": self.region,
                     "email": self.email,
-                    "password": PetLibroAPI.hash_password(self.password),
+                    "password": self.password_digest,
                     "phoneBrand": "",
                     "phoneSystemVersion": "",
                     "timezone": self.headers["timezone"],
@@ -166,7 +170,7 @@ class PetLibroSession:
                     raise PetLibroAPIError(f"Failed to login, status: {response.status}")
 
                 response_data = await response.json()
-                _LOGGER.debug(f"Re-login response data: {response_data}")
+                _LOGGER.debug("Re-login response data: %s", redact(response_data))
 
                 if not isinstance(response_data, dict) or "token" not in response_data.get("data", {}):
                     raise PetLibroAPIError("Token not found during login.")
@@ -174,10 +178,11 @@ class PetLibroSession:
                 # Get the new token from response data
                 new_token = response_data["data"]["token"]
                 self.token = new_token  # Update the session token
+                self.client_id = response_data["data"].get("clientId") or None
 
                 # Save the new token in the config entry
                 if hasattr(self, 'api') and self.api.hass and self.api.config_entry:
-                    _LOGGER.debug(f"Saving new token to config entry: {self.token}")
+                    _LOGGER.debug("Saving the new token to the config entry")
                     self.api.hass.config_entries.async_update_entry(
                         self.api.config_entry,
                         data={**self.api.config_entry.data, "token": self.token}
@@ -193,6 +198,27 @@ class PetLibroSession:
             _LOGGER.error(f"Re-login attempt failed due to an unexpected error: {e}")
             raise PetLibroAPIError(f"Unexpected error during re-login: {e}")
 
+    async def async_ensure_client_id(self) -> str:
+        """Return the MQTT client id of the current login, logging in once if it is unknown.
+
+        Concurrent callers share one login (a second login would end the first session).
+        """
+        async with self._login_lock:
+            if not self.client_id:
+                await self.re_login()
+        if not self.client_id:
+            raise PetLibroAPIError("The login answer has no clientId")
+        return self.client_id
+
+    async def async_refresh_login(self, stale_client_id: str) -> str:
+        """Log in again because `stale_client_id` was rejected; skip if a newer login exists."""
+        async with self._login_lock:
+            if self.client_id == stale_client_id:
+                await self.re_login()
+        if not self.client_id:
+            raise PetLibroAPIError("The login answer has no clientId")
+        return self.client_id
+
 class PetLibroAPI:
     """PetLibro API class"""
 
@@ -202,13 +228,12 @@ class PetLibroAPI:
         "US": "https://api.us.petlibro.com"
     }
 
-    def __init__(self, session: ClientSession, time_zone: str, region: str, email: str, password: str, token: str | None = None, config_entry=None, hass=None):
-        """Initialize."""
-        self.session = PetLibroSession(self.API_URLS[region], session, email, password, region, token, time_zone)
+    def __init__(self, session: ClientSession, time_zone: str, region: str, email: str, password_digest: str, token: str | None = None, config_entry=None, hass=None):
+        """Initialize with the account e-mail and the password digest (see security.password_digest)."""
+        self.session = PetLibroSession(self.API_URLS[region], session, email, password_digest, region, token, time_zone)
         self.region = region
         self.time_zone = time_zone
         self.email = email  # Store email for login/re-login
-        self.password = password  # Store password for login/re-login
         self.token = token
         self.config_entry = config_entry
         self.hass = hass
@@ -219,7 +244,7 @@ class PetLibroAPI:
         # Load the saved token if available
         if config_entry and "token" in config_entry.data:
             self.token = config_entry.data["token"]
-            _LOGGER.debug(f"Loaded saved token: {self.token}")
+            _LOGGER.debug("Loaded the saved token")
 
         self._last_api_call_times = {}  # To store last call time per device
         self._cached_responses = {}  # To store cached responses for short periods
@@ -231,11 +256,11 @@ class PetLibroAPI:
     @staticmethod
     def hash_password(password: str) -> str:
         """Generate the password hash for the API"""
-        return md5(password.encode("UTF-8")).hexdigest()
+        return make_password_digest(password)
 
-    async def login(self, email: str, password: str) -> str:
-        """Login to the API and retrieve the token"""
-        _LOGGER.debug("Attempting to log in with email: %s", email)
+    async def login(self, email: str, password_digest: str) -> str:
+        """Login to the API with the password digest and retrieve the token"""
+        _LOGGER.debug("Attempting to log in")
         
         try:
             # Use the request method with "POST" instead of post()
@@ -244,7 +269,7 @@ class PetLibroAPI:
                 "appSn": self.APPSN,
                 "country": self.region,
                 "email": email,
-                "password": self.hash_password(password),
+                "password": password_digest,
                 "phoneBrand": "",
                 "phoneSystemVersion": "",
                 "timezone": self.time_zone,
@@ -253,10 +278,11 @@ class PetLibroAPI:
             })
 
             if not isinstance(data, dict) or "token" not in data or not isinstance(data["token"], str):
-                _LOGGER.error("No token found during login. Response data: %s", data)
+                _LOGGER.error("No token found during login. Response data: %s", redact(data))
                 raise PetLibroAPIError("No token found during login.")
 
             self.session.token = data["token"]
+            self.session.client_id = data.get("clientId") or None
             _LOGGER.debug("Login successful")
             return self.session.token
 
@@ -526,6 +552,27 @@ class PetLibroAPI:
         self._last_api_call_times["device_messages"] = now
         self._cached_responses["device_messages"] = messages
         return messages
+
+    # --- Live updates (the app's MQTT channel); see push/
+
+    async def app_config(self) -> dict[str, Any]:
+        """Return the app configuration, incl. the MQTT brokers (`appMqttsHosts`, `mqttTlsEnable`)."""
+        data = await self.session.post("/member/app/config", json={})
+        return data if isinstance(data, dict) else {}
+
+    async def certificate_authority(self) -> dict[str, Any]:
+        """Return PETLIBRO's MQTT CA: `caCertificate` (PEM, may have a text header) and `expireTime`."""
+        data = await self.session.get("/member/certificate/ca")
+        return data if isinstance(data, dict) else {}
+
+    async def generate_certificate(self, csr_pem: str) -> dict[str, Any]:
+        """Have PETLIBRO sign an MQTT client certificate for this account.
+
+        The CSR subject must be SERIALNUMBER=<memberId>, CN=DesignLibro (anything else fails
+        with code 5995). Answer: `certificate` (PEM), `serialNumber`, `expireTime` (epoch ms).
+        """
+        data = await self.session.post("/member/certificate/generate", json={"csr": csr_pem})
+        return data if isinstance(data, dict) else {}
 
     async def get_device_events(self, device_id: str) -> dict:
         """Fetch real-time information for a device, with caching to prevent frequent requests."""

@@ -60,12 +60,14 @@
                 "data": {
                     "manual_feed_portions": "Set Manual Feed amount by Portions",
                     "pet_feed_quantity_no_rfid": "Include non-RFID Pet Consumption",
-                    "enable_shared_pets": "Show Pets from Shared Devices"
+                    "enable_shared_pets": "Show Pets from Shared Devices",
+                    "enable_live_updates": "Live updates (push)"
                 },
                 "data_description": {
                     "manual_feed_portions": "Default: Set by your chosen unit for pet feed ({uom}).",
                     "pet_feed_quantity_no_rfid": "Pet consumption will include non-RFID devices when only one pet is assigned to them.",
-                    "enable_shared_pets": "Access pets from other accounts that are linked to device(s) they share with you."
+                    "enable_shared_pets": "Access pets from other accounts that are linked to device(s) they share with you.",
+                    "enable_live_updates": "Listen to PETLIBRO's live channel (the one the app uses) and update a device as soon as it changes, instead of waiting for the next poll."
                 }
             },
             "change_credentials": {

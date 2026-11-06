@@ -15,7 +15,7 @@ from homeassistant.const import CONF_API_TOKEN, CONF_EMAIL, CONF_PASSWORD, CONF_
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import section
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.selector import selector
+from homeassistant.helpers.selector import TextSelector, TextSelectorConfig, TextSelectorType, selector
 from homeassistant.helpers.translation import async_get_translations
 
 from .api import PetLibroAPI
@@ -33,6 +33,10 @@ from .const import (
 from .exceptions import PetLibroCannotConnect, PetLibroInvalidAuth
 from .hub import PetLibroHub
 from .member import Member
+from .security import AccountCredentials
+
+# Typed passwords are masked in the form and hashed right away (see security.py).
+PASSWORD_SELECTOR = TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD))
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,7 +44,7 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_REGION): vol.In(["US"]),
         vol.Required(CONF_EMAIL): str,
-        vol.Required(CONF_PASSWORD): str,
+        vol.Required(CONF_PASSWORD): PASSWORD_SELECTOR,
     }
 )
 
@@ -48,11 +52,12 @@ class PetlibroConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Petlibro."""
 
     VERSION = 1
+    MINOR_VERSION = 2  # 1.2: the password digest replaces the stored password
 
     token: str
     email: str
     region: str
-    password: str  # Store the password temporarily for API login
+    credentials: AccountCredentials  # e-mail + password digest; the typed password is not kept
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """Handle the initial step."""
@@ -64,7 +69,7 @@ class PetlibroConfigFlow(ConfigFlow, domain=DOMAIN):
 
             # Store user input values
             self.email = user_input[CONF_EMAIL]
-            self.password = user_input[CONF_PASSWORD]
+            self.credentials = AccountCredentials.from_user_input(self.email, user_input[CONF_PASSWORD])
             self.region = user_input[CONF_REGION]
 
             # Validate input and login to the API
@@ -74,8 +79,7 @@ class PetlibroConfigFlow(ConfigFlow, domain=DOMAIN):
                     title=self.email,
                     data={
                         CONF_REGION: self.region,
-                        CONF_EMAIL: self.email,
-                        CONF_PASSWORD: self.password,  # Save password in entry
+                        **self.credentials.as_entry_data(),
                         CONF_API_TOKEN: self.token
                     }
                 )
@@ -100,8 +104,7 @@ class PetlibroConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input:
             entry_id = self.context["entry_id"]
             if entry := self.hass.config_entries.async_get_entry(entry_id):
-                user_input = user_input | {CONF_EMAIL: self.email, CONF_REGION: self.region}
-                self.password = user_input[CONF_PASSWORD]
+                self.credentials = AccountCredentials.from_user_input(self.email, user_input[CONF_PASSWORD])
 
                 # Validate input and login to the API again
                 if not (error := await self._validate_input()):
@@ -109,9 +112,8 @@ class PetlibroConfigFlow(ConfigFlow, domain=DOMAIN):
                     self.hass.config_entries.async_update_entry(
                         entry,
                         data={
-                            CONF_EMAIL: self.email,
                             CONF_REGION: self.region,
-                            CONF_PASSWORD: self.password,  # Ensure password is updated
+                            **self.credentials.as_entry_data(),
                             CONF_API_TOKEN: self.token
                         },
                     )
@@ -122,7 +124,7 @@ class PetlibroConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="reauth_confirm",
-            data_schema=vol.Schema({vol.Required(CONF_PASSWORD): str}),
+            data_schema=vol.Schema({vol.Required(CONF_PASSWORD): PASSWORD_SELECTOR}),
             description_placeholders={CONF_EMAIL: self.email, CONF_REGION: self.region},
             errors=errors,
         )
@@ -134,7 +136,7 @@ class PetlibroConfigFlow(ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             self.email = user_input[CONF_EMAIL]
-            self.password = user_input[CONF_PASSWORD]
+            self.credentials = AccountCredentials.from_user_input(self.email, user_input[CONF_PASSWORD])
             self.region = entry.data.get(CONF_REGION, "US")
 
             if not (error := await self._validate_input()):
@@ -143,8 +145,7 @@ class PetlibroConfigFlow(ConfigFlow, domain=DOMAIN):
                     title=self.email,
                     data={
                         CONF_REGION: self.region,
-                        CONF_EMAIL: self.email,
-                        CONF_PASSWORD: self.password,
+                        **self.credentials.as_entry_data(),
                         CONF_API_TOKEN: self.token,
                     },
                 )
@@ -156,7 +157,7 @@ class PetlibroConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id="reconfigure",
             data_schema=vol.Schema({
                 vol.Required(CONF_EMAIL, default=entry.data.get(CONF_EMAIL, "")): str,
-                vol.Required(CONF_PASSWORD): str,
+                vol.Required(CONF_PASSWORD): PASSWORD_SELECTOR,
             }),
             errors=errors,
         )
@@ -171,11 +172,11 @@ class PetlibroConfigFlow(ConfigFlow, domain=DOMAIN):
                 async_get_clientsession(self.hass),
                 self.hass.config.time_zone,
                 self.region,
-                self.email,
-                self.password
+                self.credentials.email,
+                self.credentials.password_digest,
             )
 
-            self.token = await api.login(self.email, self.password)
+            self.token = await api.login(self.credentials.email, self.credentials.password_digest)
             _LOGGER.debug("Login successful")
         except PetLibroCannotConnect:
             return "cannot_connect"
@@ -268,6 +269,9 @@ class PetlibroOptionsFlow(OptionsFlow):
                     manual_reload = True
                 else:
                     await self.hub.pets_helper.remove_shared_pets()
+
+            if IntegrationSetting.ENABLE_LIVE_UPDATES in updates:
+                manual_reload = True  # live updates start or stop with the entry
 
             await self.hub.async_refresh()
 
@@ -367,16 +371,16 @@ class PetlibroOptionsFlow(OptionsFlow):
 
         if user_input:
             new_email = user_input[CONF_EMAIL]
-            new_password = user_input[CONF_PASSWORD]
+            credentials = AccountCredentials.from_user_input(new_email, user_input[CONF_PASSWORD])
             try:
                 api = PetLibroAPI(
                     async_get_clientsession(self.hass),
                     self.hass.config.time_zone,
                     self.entry.data[CONF_REGION],
-                    new_email,
-                    new_password,
+                    credentials.email,
+                    credentials.password_digest,
                 )
-                new_token = await api.login(new_email, new_password)
+                new_token = await api.login(credentials.email, credentials.password_digest)
             except PetLibroInvalidAuth:
                 errors["base"] = "invalid_auth"
             except PetLibroCannotConnect:
@@ -389,9 +393,8 @@ class PetlibroOptionsFlow(OptionsFlow):
                     self.entry,
                     title=new_email,
                     data={
-                        **self.entry.data,
-                        CONF_EMAIL: new_email,
-                        CONF_PASSWORD: new_password,
+                        **{key: value for key, value in self.entry.data.items() if key != CONF_PASSWORD},
+                        **credentials.as_entry_data(),
                         CONF_API_TOKEN: new_token,
                     },
                 )
@@ -402,7 +405,7 @@ class PetlibroOptionsFlow(OptionsFlow):
             step_id="change_credentials",
             data_schema=vol.Schema({
                 vol.Required(CONF_EMAIL, default=self.entry.data.get(CONF_EMAIL, "")): str,
-                vol.Required(CONF_PASSWORD): str,
+                vol.Required(CONF_PASSWORD): PASSWORD_SELECTOR,
             }),
             errors=errors,
         )

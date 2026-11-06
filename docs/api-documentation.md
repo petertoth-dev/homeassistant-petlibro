@@ -596,6 +596,29 @@ JSON-encoded `param` that holds the `deviceSn`, which is how a message is matche
 device. Reading the list does not mark messages as read (`GET /device/msg/detail?id=`
 does). `GET /device/msg/page` is the paged history. Shape from PR #293 (PLAF203).
 
+## Live updates (the app's MQTT channel)
+
+The PETLIBRO app gets changes pushed over MQTT; the integration uses the same channel (option
+"Live updates (push)", on by default) and re-reads a device as soon as it changes.
+
+1. `POST /member/app/config` → `appMqttsHosts` (`mqtt.us.petlibro.com:8883`), `mqttTlsEnable: true`.
+2. `GET /member/certificate/ca` → `caCertificate` (PEM, may start with a text header), the CA that
+   signs the broker and the client certificates.
+3. `POST /member/certificate/generate {"csr": "<PEM>"}` → `certificate`, `serialNumber`, `expireTime`.
+   The CSR subject must be `SERIALNUMBER=<memberId>, CN=DesignLibro` (RSA 2048); anything else
+   fails with code 5995. The private key stays in Home Assistant.
+4. Connect with TLS (client certificate + key, server checked against the CA), MQTT 3.1.1, using the
+   login's `clientId` (from the `/member/auth/login` answer) as client id, username and password.
+   A certificate alone is refused (`CONNACK 5`).
+5. Subscribe `dl/member/<memberId>/sub` and, per device, `dl/<productIdentifier>/<deviceSn>/app/+/sub`.
+6. Messages look like `{"cmd": "APP_REFRESH_EVENT", "eventKeys": [...], "msgId", "linkId", "ts"}` on
+   `dl/<productIdentifier>/<deviceSn>/app/event/sub` and mean "re-read this device".
+
+A new API login with the same account ends the MQTT session (the client id changes); the integration
+then reconnects with the new client id. The client certificate (4 years) and the CA are renewed 30 days
+before they expire (checked at start and daily) and re-issued when TLS fails. Observed with a shared
+(secondary) account on a Granary 2 Vision Duo (PLAF205), a Granary (PLAF103) and a Polar (PLAF109).
+
 ## Pet Endpoints
 
 ### POST /device/devicePetRelation/getBoundPets

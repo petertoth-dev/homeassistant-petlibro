@@ -59,6 +59,12 @@ class Member(Event):
         return self._data.get(API.ID)
 
     @property
+    def member_id(self) -> int | None:
+        """Numeric member id (the account in MQTT topics and certificates)."""
+        value = self._data.get("memberId", self._data.get(API.ID))
+        return int(value) if isinstance(value, (int, str)) and str(value).isdigit() else None
+
+    @property
     def email(self) -> str:
         """Account email."""
         return self._data.get(API.EMAIL, "")

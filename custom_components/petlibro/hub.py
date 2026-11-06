@@ -14,7 +14,8 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from homeassistant.helpers.device_registry import async_get as async_get_device_register
 from homeassistant.util.dt import utcnow
 from .api import PetLibroAPI  # Use a relative import if inside the same package
-from .const import CONF_EMAIL, CONF_PASSWORD, IntegrationSetting
+from .const import IntegrationSetting
+from .security import AccountCredentials
 from .devices import Device, product_name_map
 from .member import Member
 from .pets import Pet
@@ -32,34 +33,27 @@ class PetLibroHub:
         self._data = self.entry.data
         self.devices: dict[str, Device] = {}
         self.pets: dict[str, Pet] = {}
+        self.push = None  # PetLibroPush when live updates run (set in __init__.py)
         self.last_refresh_times = {}  # Track the last refresh time for the member, each pet & each device
         self._last_online_status = {}  # Store online status per device
 
-        # Fetch email, password, and region from entry.data
-        email = self.entry.data.get(CONF_EMAIL)
-        password = self.entry.data.get(CONF_PASSWORD)
+        # E-mail + password digest (the password itself is never stored, see security.py)
+        credentials = AccountCredentials.from_entry_data(self.entry.data)
         region = self.entry.data.get(CONF_REGION)
 
-        # Check if the required information is provided
-        if not email:
-            _LOGGER.error("Email is missing in the configuration entry.")
-            raise ValueError("Email is required to initialize PetLibroAPI.")
-        if not password:
-            _LOGGER.error("Password is missing in the configuration entry.")
-            raise ValueError("Password is required to initialize PetLibroAPI.")
         if not region:
             _LOGGER.error("Region is missing in the configuration entry.")
             raise ValueError("Region is required to initialize PetLibroAPI.")
 
-        _LOGGER.debug(f"Initializing PetLibroAPI with email: {email}, region: {region}")
+        _LOGGER.debug("Initializing PetLibroAPI (region %s)", region)
 
         # Initialize the PetLibro API instance
         self.api = PetLibroAPI(
             async_get_clientsession(hass),
             hass.config.time_zone,
             region,
-            email,
-            password,
+            credentials.email,
+            credentials.password_digest,
             self.entry.data.get(CONF_API_TOKEN)
         )
 

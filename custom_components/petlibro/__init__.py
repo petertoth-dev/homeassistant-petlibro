@@ -20,8 +20,11 @@ from .devices.fountains.dockstream_2_smart_cordless_fountain import Dockstream2S
 from .devices.fountains.dockstream_2_smart_fountain import Dockstream2SmartFountain
 from .devices.litterboxes.litter_box import LitterBox
 from .devices.litterboxes.luma_smart_litter_box import LumaSmartLitterBox
-from .const import DOMAIN, CONF_EMAIL, CONF_PASSWORD, PLATFORMS, UPDATE_INTERVAL_SECONDS  # Assuming UPDATE_INTERVAL_SECONDS is defined in const
+from .const import DOMAIN, PLATFORMS, UPDATE_INTERVAL_SECONDS, IntegrationSetting  # Assuming UPDATE_INTERVAL_SECONDS is defined in const
 from .hub import PetLibroHub
+from .push import PetLibroPush
+from .push.certificates import CertificateStore
+from .security import AccountCredentials, migrate_entry_data
 from .services import async_setup_services, async_unload_services
 
 _LOGGER = logging.getLogger(__name__)
@@ -163,13 +166,25 @@ def get_platforms_for_devices(devices: list[Device]) -> set[Platform]:
     }
 
 
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Migrate old config entries.
+
+    1.1 → 1.2: the stored password is replaced by its digest (the API only needs the digest).
+    """
+    if entry.version > 1:
+        return False
+    if entry.minor_version < 2:
+        hass.config_entries.async_update_entry(entry, data=migrate_entry_data(entry.data), minor_version=2)
+        _LOGGER.info("PETLIBRO: stored password replaced by its digest (config entry 1.2)")
+    return True
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up platform from a ConfigEntry."""
-    email = entry.data.get(CONF_EMAIL)
-    password = entry.data.get(CONF_PASSWORD)
-
-    # Ensure email and password exist
-    if not email or not password:
+    # Ensure the e-mail and the password digest exist
+    try:
+        AccountCredentials.from_entry_data(entry.data)
+    except ValueError:
         _LOGGER.error("Email or password is missing in the configuration entry. Cannot proceed.")
         return False
 
@@ -200,7 +215,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         await async_setup_services(hass)
 
-        _LOGGER.info(f"Successfully set up PetLibro integration for {email}")
+        _async_start_live_updates(hass, entry, hub)
+
+        _LOGGER.info("Successfully set up the PetLibro integration")
         return True
 
     except Exception as err:
@@ -221,13 +238,31 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
     if unload_ok:
-        _LOGGER.info(f"Successfully unloaded PetLibro entry for {entry.data.get(CONF_EMAIL)}")
+        _LOGGER.info("Successfully unloaded the PetLibro entry")
         await hub.async_unload()  # If you have any cleanup to do in the hub
         await async_unload_services(hass)
     else:
-        _LOGGER.error(f"Failed to unload PetLibro entry for {entry.data.get(CONF_EMAIL)}")
+        _LOGGER.error("Failed to unload the PetLibro entry")
 
     return unload_ok
+
+
+def _async_start_live_updates(hass: HomeAssistant, entry: ConfigEntry, hub: PetLibroHub) -> None:
+    """Start live updates (PETLIBRO's push channel) unless they are turned off."""
+    setting = IntegrationSetting.ENABLE_LIVE_UPDATES
+    if not entry.options.get(setting, setting.default):
+        _LOGGER.debug("PETLIBRO live updates are turned off")
+        return
+    if (member_id := hub.member.member_id) is None:
+        _LOGGER.warning("PETLIBRO live updates unavailable: the account's member id is unknown")
+        return
+    hub.push = PetLibroPush(hass, entry, hub, member_id)
+    hub.push.async_start()
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Delete the stored live-update certificate together with the entry."""
+    await CertificateStore(hass, entry.entry_id).async_remove()
 
 
 async def async_remove_config_entry_device(hass: HomeAssistant, entry: ConfigEntry, device_entry: DeviceEntry) -> bool:
