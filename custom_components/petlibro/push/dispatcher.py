@@ -97,6 +97,7 @@ class DeviceRefresher:
     async def _async_refresh(self, serial: str) -> None:
         if (device := self._hub.devices.get(serial)) is None:
             return
+        self._hub.api.forget_cached(serial)  # the push means newer data than the cache holds
         try:
             await device.refresh()
         except PetLibroAPIError as err:

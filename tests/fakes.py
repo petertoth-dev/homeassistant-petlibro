@@ -158,6 +158,9 @@ class FakeCloud:
         )
         self.time_zone = "America/Los_Angeles"
 
+    def forget_cached(self, serial):
+        self.forgotten = [*getattr(self, "forgotten", []), serial]
+
     async def member_info(self):
         return {"email": "tester@example.invalid", "memberId": MEMBER_ID, "id": MEMBER_ID}
 

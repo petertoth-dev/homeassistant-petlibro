@@ -42,7 +42,8 @@ async def test_unknown_commands_are_reported_once_at_info(hass, caplog):
 
 def make_hub(hass, device):
     coordinator = SimpleNamespace(async_update_listeners=MagicMock())
-    return SimpleNamespace(devices={"SN1": device}, last_refresh_times={}, coordinator=coordinator)
+    api = SimpleNamespace(forget_cached=MagicMock())
+    return SimpleNamespace(devices={"SN1": device}, last_refresh_times={}, coordinator=coordinator, api=api)
 
 
 async def test_a_burst_of_pushes_becomes_one_refresh_plus_one_trailing(hass):
@@ -84,4 +85,26 @@ async def test_a_failed_refresh_is_logged_and_does_not_notify(hass, caplog):
     await hass.async_block_till_done()
     hub.coordinator.async_update_listeners.assert_not_called()
     assert "refreshing Feeder failed" in caplog.text
+    refresher.async_shutdown()
+
+
+async def test_every_refresh_after_a_push_skips_the_short_cache(hass):
+    """Pushes come in bursts; the trailing refresh must not reuse the first one's answers."""
+    entry = MockConfigEntry(domain="petlibro")
+    entry.add_to_hass(hass)
+    calls = []
+    hub = None
+
+    async def refresh():
+        calls.append(hub.api.forget_cached.call_count)
+
+    device = SimpleNamespace(name="Duo", refresh=refresh)
+    hub = make_hub(hass, device)
+    refresher = DeviceRefresher(hass, entry, hub, cooldown=0.05)
+    for _ in range(3):
+        await refresher.async_handle(message())
+    await asyncio.sleep(0.1)
+    await hass.async_block_till_done()
+    assert calls == [1, 2]  # the cache was dropped before each of the two refreshes
+    hub.api.forget_cached.assert_called_with("SN1")
     refresher.async_shutdown()

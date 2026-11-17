@@ -128,3 +128,11 @@ async def test_a_stored_session_never_logs_in_and_asks_for_the_password(hass, ai
         await api.session.post("/member/member/info", json={})
     assert asked == [True]
     assert not any("/member/auth/login" in str(call[1]) for call in aioclient_mock.mock_calls)
+
+
+def test_forget_cached_drops_one_device_and_the_message_list(api):
+    api._last_api_call_times.update({"SN1_realInfo": 1, "SN1_dataRealInfo": 1, "SN2_realInfo": 1, "device_messages": 1})
+    api._cached_responses.update({"SN1_realInfo": {}, "SN2_realInfo": {}, "device_messages": []})
+    api.forget_cached("SN1")
+    assert set(api._last_api_call_times) == {"SN2_realInfo"}
+    assert set(api._cached_responses) == {"SN2_realInfo"}

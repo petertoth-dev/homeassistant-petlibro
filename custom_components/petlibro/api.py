@@ -568,6 +568,17 @@ class PetLibroAPI:
 
     # --- Live updates (the app's MQTT channel); see push/
 
+    def forget_cached(self, serial: str) -> None:
+        """Drop the 10-second cached answers for one device and the account's message list.
+
+        A live update means the cloud has new data for that device, so the reads that follow
+        it must reach the cloud instead of returning an answer from just before the change.
+        """
+        prefix = f"{serial}_"
+        for cache in (self._last_api_call_times, self._cached_responses):
+            for key in [key for key in cache if key.startswith(prefix) or key == "device_messages"]:
+                del cache[key]
+
     async def app_config(self) -> dict[str, Any]:
         """Return the app configuration, incl. the MQTT brokers (`appMqttsHosts`, `mqttTlsEnable`)."""
         data = await self.session.post("/member/app/config", json={})
